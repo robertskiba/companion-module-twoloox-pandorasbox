@@ -30,10 +30,17 @@ Companion module for controlling **twoloox Pandoras Box** media servers via the 
 - 26+ dynamic presets (4 per sequence)
 - Real-time status variables
 
+✅ **Feedbacks**
+- Transport state matches (main transport)
+- Sequence transport state matches (per sequence)
+- Remaining time until next cue under threshold
+
 ## Tested Versions
 
-- **Companion:** v4.2
+- **Companion:** v5.0.5
 - **Pandoras Box:** v8.11.3
+
+Requires **Companion v4.3 or later** (this module uses `@companion-module/base` v2.x). If you're on an older Companion version, use [module version 3.0.1](https://github.com/bitfocus/companion-module-twoloox-pandorasbox/releases/tag/v3.0.1) instead, which targets `@companion-module/base` v1.x.
 
 ## Installation
 
@@ -64,7 +71,6 @@ The module will automatically:
 - **Polling:** Adaptive rate based on sequence state
 
 ## Known Limitations
-- No feedback implementation yet (status display only via variables)
 - Cue discovery not implemented (manual cue ID entry required)
 - SMPTE mode cannot be read back (write-only command)
 
