@@ -133,61 +133,66 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			protocolAliveResolve = resolve
 		})
 
-		const client = new PBClient(host, domain, {
-			onProtocolAlive: () => {
-				protocolAliveResolve?.()
-				protocolAliveResolve = undefined
+		const client = new PBClient(
+			host,
+			domain,
+			{
+				onProtocolAlive: () => {
+					protocolAliveResolve?.()
+					protocolAliveResolve = undefined
+				},
+				onDisconnected: () => {
+					// Only report disconnect if this is the active client
+					if (this.client === client) {
+						this.updateStatus(InstanceStatus.Disconnected, 'Disconnected from Pandoras Box')
+					}
+				},
+				onTransport: (state) => {
+					this.state.transport = state
+				},
+				onSequenceTransport: (seqId, state) => {
+					this.sequenceStates.set(seqId, state)
+					this.updateSequenceStatusVariables()
+					this.checkAllFeedbacks()
+				},
+				onSequenceTime: (seqId, h, m, s, f) => {
+					this.sequenceTimes.set(seqId, { h, m, s, f })
+					this.updateSequenceTimeVariables()
+				},
+				onSequenceCountdown: (seqId, h, m, s, f) => {
+					this.sequenceCountdowns.set(seqId, { h, m, s, f })
+					this.updateSequenceCountdownVariables()
+				},
+				onSequenceCueInfo: (seqId, cueInfo) => {
+					this.sequenceCueInfos.set(seqId, cueInfo)
+					this.updateSequenceNextCueVariables()
+				},
+				onSequenceOpacity: (seqId, value) => {
+					this.sequenceOpacities.set(seqId, value)
+					this.updateSequenceOpacityVariables()
+				},
+				onSequencesUpdated: (sequences) => {
+					this.log('info', `Received ${sequences.length} sequences from Pandoras Box`)
+					this.sequences = sequences
+					// Update actions with new sequence choices
+					this.updateActionDefinitions()
+					// Update variable definitions and values for sequences
+					this.updateSequenceVariables()
+					// Start polling sequence statuses
+					this.client?.setPollSequences(sequences.map((s) => s.id))
+					// Update presets with new sequences
+					this.updatePresetDefinitions()
+				},
+				onDebug: (message) => {
+					this.log('debug', `[PBClient] ${message}`)
+				},
+				onError: (err) => {
+					this.log('error', err.message)
+					this.updateStatus(InstanceStatus.UnknownError, err.message)
+				},
 			},
-			onDisconnected: () => {
-				// Only report disconnect if this is the active client
-				if (this.client === client) {
-					this.updateStatus(InstanceStatus.Disconnected, 'Disconnected from Pandoras Box')
-				}
-			},
-			onTransport: (state) => {
-				this.state.transport = state
-			},
-			onSequenceTransport: (seqId, state) => {
-				this.sequenceStates.set(seqId, state)
-				this.updateSequenceStatusVariables()
-				this.checkAllFeedbacks()
-			},
-			onSequenceTime: (seqId, h, m, s, f) => {
-				this.sequenceTimes.set(seqId, { h, m, s, f })
-				this.updateSequenceTimeVariables()
-			},
-			onSequenceCountdown: (seqId, h, m, s, f) => {
-				this.sequenceCountdowns.set(seqId, { h, m, s, f })
-				this.updateSequenceCountdownVariables()
-			},
-			onSequenceCueInfo: (seqId, cueInfo) => {
-				this.sequenceCueInfos.set(seqId, cueInfo)
-				this.updateSequenceNextCueVariables()
-			},
-			onSequenceOpacity: (seqId, value) => {
-				this.sequenceOpacities.set(seqId, value)
-				this.updateSequenceOpacityVariables()
-			},
-			onSequencesUpdated: (sequences) => {
-				this.log('info', `Received ${sequences.length} sequences from Pandoras Box`)
-				this.sequences = sequences
-				// Update actions with new sequence choices
-				this.updateActionDefinitions()
-				// Update variable definitions and values for sequences
-				this.updateSequenceVariables()
-				// Start polling sequence statuses
-				this.client?.setPollSequences(sequences.map((s) => s.id))
-				// Update presets with new sequences
-				this.updatePresetDefinitions()
-			},
-			onDebug: (message) => {
-				this.log('debug', `[PBClient] ${message}`)
-			},
-			onError: (err) => {
-				this.log('error', err.message)
-				this.updateStatus(InstanceStatus.UnknownError, err.message)
-			},
-		}, config.debugTraffic)
+			config.debugTraffic,
+		)
 
 		this.client = client
 

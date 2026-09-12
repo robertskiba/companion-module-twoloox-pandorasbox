@@ -24,6 +24,10 @@ Companion module for controlling **twoloox Pandoras Box** media servers via the 
 - Set Site IP Address
 - Apply GUI View
 
+✅ **Sequence Opacity**
+- Sequence Opacity Fade: fade a sequence's visibility in/out to a target (0-100%) over a configurable duration, with a choice of curve (Linear, Ease In, Ease Out, Ease In-Out, S-Curve)
+- Live sequence opacity variable
+
 ✅ **Dynamic Features**
 - Automatic sequence discovery
 - Per-sequence timecode polling (30x/sec when playing)
@@ -53,6 +57,7 @@ After adding the module in Companion:
 1. **Host:** IP address of Pandoras Box server (e.g., `192.168.1.100`)
 2. **Port:** Default `6211`
 3. **Domain:** Default `0`
+4. **Log protocol traffic (debug):** Off by default. Enable and set the connection's log level to Debug in Companion to capture a hex dump of every sent/received PBAU message, useful for troubleshooting.
 
 The module will automatically:
 - Discover all sequences
@@ -67,7 +72,7 @@ The module will automatically:
 
 ### Protocol Details
 - **PBAU Header:** Mixed endianness (BE headers, LE sequence IDs)
-- **Commands Implemented:** 15+ (Transport, Cue, Programming, Project, SMPTE)
+- **Commands Implemented:** 20+ (Transport, Cue, Programming, Project, SMPTE, Opacity)
 - **Polling:** Adaptive rate based on sequence state
 
 ## Known Limitations
