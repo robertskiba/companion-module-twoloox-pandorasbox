@@ -1,5 +1,5 @@
 import net from 'net'
-import { CommandId, PR_PORT } from './constants.js'
+import { CommandId, PR_PORT, SEQUENCE_OPACITY_MAX } from './constants.js'
 
 export type TransportState = 'Play' | 'Pause' | 'Stop' | 'Unknown'
 
@@ -14,6 +14,52 @@ export interface CueInfo {
 	nextCueMode: number // 0=Pause, 1=Play, 2=Stop, 3=Jump, 4=Wait
 }
 
+// 'PBAU'(4) + preHeader(1) + domain(4) + length(2) + postHeader(5) + checksum(1), body follows after this.
+const PBAU_HEADER_LEN = 17
+
+// Human-readable label for a command id, for debug logging.
+function commandName(id: number): string {
+	const name = CommandId[id]
+	return name !== undefined ? `${name}(${id})` : `${id}`
+}
+
+/**
+ * Splits as many complete PBAU messages as possible out of a byte stream buffer, using the
+ * length field in each message's header. A single TCP `data` event can contain more than one
+ * PBAU message concatenated together (or only part of one), so this must not assume that one
+ * `data` event equals exactly one message.
+ */
+function extractPbauMessages(buffer: Buffer): { messages: Buffer[]; remainder: Buffer } {
+	const messages: Buffer[] = []
+	let offset = 0
+
+	while (buffer.length - offset >= PBAU_HEADER_LEN) {
+		if (buffer.toString('ascii', offset, offset + 4) !== 'PBAU') {
+			// Lost sync with the stream - drop a byte and try to resync from the next position.
+			offset += 1
+			continue
+		}
+		const bodyLen = buffer[offset + 9] * 256 + buffer[offset + 10]
+		const totalLen = PBAU_HEADER_LEN + bodyLen
+		if (buffer.length - offset < totalLen) break // Wait for the rest of this message to arrive.
+		messages.push(buffer.subarray(offset, offset + totalLen))
+		offset += totalLen
+	}
+
+	return { messages, remainder: buffer.subarray(offset) }
+}
+
+export type FadeCurve = 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 's_curve'
+
+// Progress (0-1) -> eased progress (0-1). Linear is the recommended default - see fadeSequenceVisibility.
+const FADE_CURVES: Record<FadeCurve, (t: number) => number> = {
+	linear: (t) => t,
+	ease_in: (t) => t * t * t,
+	ease_out: (t) => 1 - Math.pow(1 - t, 3),
+	ease_in_out: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+	s_curve: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
+}
+
 export interface PollHandlers {
 	/** Called once when we receive the first valid PBAU packet for the configured domain */
 	onProtocolAlive?: () => void
@@ -22,6 +68,7 @@ export interface PollHandlers {
 	onSequenceTime?: (seqId: number, h: number, m: number, s: number, f: number) => void
 	onSequenceCountdown?: (seqId: number, h: number, m: number, s: number, f: number) => void
 	onSequenceCueInfo?: (seqId: number, cueInfo: CueInfo) => void
+	onSequenceOpacity?: (seqId: number, value: number) => void
 	onNextCueTime?: (h: number, m: number, s: number, f: number) => void
 	onTransport?: (state: TransportState) => void
 	onSequenceTransport?: (seqId: number, state: TransportState) => void
@@ -38,6 +85,7 @@ class SequenceConnection {
 	private socket: net.Socket | null = null
 	private pollTimer: NodeJS.Timeout | null = null
 	private connected = false
+	private rxBuffer: Buffer = Buffer.alloc(0)
 	private onTime: (h: number, m: number, s: number, f: number) => void
 	private onCountdown: (h: number, m: number, s: number, f: number) => void
 	private onCueInfo: (cueInfo: CueInfo) => void
@@ -85,7 +133,7 @@ class SequenceConnection {
 				this.stopPolling()
 			})
 
-			sock.on('data', (data) => this.handleData(data))
+			sock.on('data', (chunk) => this.onSocketData(chunk))
 
 			sock.connect({ host: this.host, port: PR_PORT }, () => {
 				this.connected = true
@@ -102,6 +150,16 @@ class SequenceConnection {
 			this.socket = null
 		}
 		this.connected = false
+		this.rxBuffer = Buffer.alloc(0)
+	}
+
+	private onSocketData(chunk: Buffer): void {
+		this.rxBuffer = this.rxBuffer.length === 0 ? chunk : Buffer.concat([this.rxBuffer, chunk])
+		const { messages, remainder } = extractPbauMessages(this.rxBuffer)
+		this.rxBuffer = remainder
+		for (const message of messages) {
+			this.handleData(message)
+		}
 	}
 
 	updateState(state: TransportState): void {
@@ -288,17 +346,29 @@ export class PBClient {
 	private statusRequestPending = false
 	private sequenceStates: Map<number, TransportState> = new Map()
 	private gotAnyResponse = false
+	private rxBuffer: Buffer = Buffer.alloc(0)
 
 	// Per-sequence connections for timecode polling
 	private sequenceConnections: Map<number, SequenceConnection> = new Map()
 
+	// GetSequenceTransparency responses don't echo the sequenceId, so requests are serialized one at a time.
+	private pendingTransparencyResolve: ((value: number) => void) | null = null
+	private transparencyRequestLock: Promise<unknown> = Promise.resolve()
+
+	// Active fade timers per sequence, so re-triggering a fade cancels the previous one for that sequence.
+	private activeFades: Map<number, NodeJS.Timeout> = new Map()
+	private static readonly FADE_STEP_INTERVAL_MS = 33 // ~30 steps/sec, matches the module's other real-time polling rates
+
 	// Polling intervals
 	private static readonly STATUS_POLL_INTERVAL = 200 // 5x per second
 
-	constructor(host: string, domain: number, handlers: PollHandlers) {
+	private debugTraffic: boolean
+
+	constructor(host: string, domain: number, handlers: PollHandlers, debugTraffic = false) {
 		this.host = host
 		this.domain = domain
 		this.pollHandlers = handlers
+		this.debugTraffic = debugTraffic
 	}
 
 	async connect(): Promise<void> {
@@ -322,7 +392,7 @@ export class PBClient {
 				this.pollHandlers.onDisconnected?.()
 			})
 
-			sock.on('data', (data) => this.handleData(data))
+			sock.on('data', (chunk) => this.onSocketData(chunk))
 
 			sock.connect({ host: this.host, port: PR_PORT }, () => {
 				this.connecting = false
@@ -335,9 +405,23 @@ export class PBClient {
 	disconnect(): void {
 		this.stopPolling()
 		this.disconnectAllSequenceConnections()
+		for (const timer of this.activeFades.values()) {
+			clearInterval(timer)
+		}
+		this.activeFades.clear()
 		if (this.socket) {
 			this.socket.destroy()
 			this.socket = null
+		}
+		this.rxBuffer = Buffer.alloc(0)
+	}
+
+	private onSocketData(chunk: Buffer): void {
+		this.rxBuffer = this.rxBuffer.length === 0 ? chunk : Buffer.concat([this.rxBuffer, chunk])
+		const { messages, remainder } = extractPbauMessages(this.rxBuffer)
+		this.rxBuffer = remainder
+		for (const message of messages) {
+			this.handleData(message)
 		}
 	}
 
@@ -411,6 +495,94 @@ export class PBClient {
 
 	async nextOrLastCue(sequenceId: number, isNext: boolean): Promise<void> {
 		await this.send(CommandId.MoveSeqToLastNextCue, [this.writeInt(sequenceId), Buffer.from([isNext ? 1 : 0])])
+	}
+
+	async getSequenceTransparency(sequenceId: number): Promise<number> {
+		// Responses to GetSequenceTransparency don't echo the sequenceId, so only one such
+		// request may be in flight at a time - queue concurrent callers behind each other.
+		const run = async (): Promise<number> =>
+			new Promise<number>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					this.pendingTransparencyResolve = null
+					reject(new Error(`Timed out waiting for transparency of sequence ${sequenceId}`))
+				}, 2000)
+				this.pendingTransparencyResolve = (value) => {
+					clearTimeout(timeout)
+					resolve(value)
+				}
+				this.send(CommandId.GetSequenceTransparency, [this.writeInt(sequenceId)]).catch((e: unknown) => {
+					clearTimeout(timeout)
+					this.pendingTransparencyResolve = null
+					reject(e instanceof Error ? e : new Error(String(e)))
+				})
+			})
+
+		const result = this.transparencyRequestLock.then(run, run)
+		this.transparencyRequestLock = result.catch(() => undefined)
+		return result
+	}
+
+	async setSequenceTransparency(sequenceId: number, value: number): Promise<void> {
+		// GetSequenceTransparency and SetSequenceTransparency use different native scales on this
+		// device (v8.11.3): reads are linear 0-65535, but writes only take visible effect in 0-255 -
+		// values above ~255 are rendered as fully visible regardless of the actual number sent.
+		// `value` here is in the 0-65535 domain (matching reads/percent), so descale before sending.
+		const clampedLogical = Math.max(0, Math.min(SEQUENCE_OPACITY_MAX, Math.round(value)))
+		const wireValue = Math.round((clampedLogical / SEQUENCE_OPACITY_MAX) * 255)
+		await this.send(CommandId.SetSequenceTransparency, [this.writeInt(sequenceId), this.writeInt(wireValue)])
+	}
+
+	/**
+	 * Fades a sequence's visibility from its current value to targetValue (0-65535) over durationMs.
+	 * Uses a linear ramp by default: with only ~30 steps/sec, an eased curve visibly clusters/stalls
+	 * near the start and end (many ticks round to the same value) then rushes through the middle -
+	 * linear distributes the steps evenly and matches how lighting-desk dimmer fades work.
+	 * Re-triggering a fade for the same sequence cancels the previous one.
+	 *
+	 * Returns as soon as the fade has started, not when it finishes - a multi-second fade must not
+	 * hold the calling action open, or the host's action-execution timeout kills it mid-fade.
+	 */
+	async fadeSequenceVisibility(
+		sequenceId: number,
+		targetValue: number,
+		durationMs: number,
+		curve: FadeCurve = 'linear',
+	): Promise<void> {
+		const existing = this.activeFades.get(sequenceId)
+		if (existing) {
+			clearInterval(existing)
+			this.activeFades.delete(sequenceId)
+		}
+
+		const target = Math.max(0, Math.min(SEQUENCE_OPACITY_MAX, Math.round(targetValue)))
+		const startValue = await this.getSequenceTransparency(sequenceId)
+
+		if (durationMs <= 0 || startValue === target) {
+			await this.setSequenceTransparency(sequenceId, target)
+			return
+		}
+
+		const applyCurve = FADE_CURVES[curve] ?? FADE_CURVES.linear
+		const delta = target - startValue
+
+		// Track progress by wall-clock elapsed time rather than a fixed tick count: setInterval ticks
+		// drift under load (concurrent status polling, TCP writes), and that drift compounds over the
+		// hundreds of ticks a long fade needs - a 10s fade could otherwise measurably overrun to 14s+.
+		const startTime = Date.now()
+		const timer = setInterval(() => {
+			const progress = Math.min(1, (Date.now() - startTime) / durationMs)
+			const value = Math.round(startValue + delta * applyCurve(progress))
+
+			void this.setSequenceTransparency(sequenceId, value).catch((e: unknown) => {
+				this.pollHandlers.onDebug?.(`Fade[${sequenceId}] send error: ${e instanceof Error ? e.message : e}`)
+			})
+
+			if (progress >= 1) {
+				clearInterval(timer)
+				this.activeFades.delete(sequenceId)
+			}
+		}, PBClient.FADE_STEP_INTERVAL_MS)
+		this.activeFades.set(sequenceId, timer)
 	}
 
 	async ignoreNextCue(sequenceId: number, doIgnore: boolean): Promise<void> {
@@ -512,6 +684,9 @@ export class PBClient {
 		const header = this.buildHeader(body.length)
 		const checksum = this.checksum(header)
 		const message = Buffer.concat([Buffer.from('PBAU', 'ascii'), header, Buffer.from([checksum]), body])
+		if (this.debugTraffic) {
+			this.pollHandlers.onDebug?.(`TX ${commandName(commandId)} ${message.toString('hex')}`)
+		}
 		await new Promise<void>((resolve, reject) => {
 			this.socket?.write(message, (err) => {
 				if (err) {
@@ -536,6 +711,9 @@ export class PBClient {
 				this.pollHandlers.onProtocolAlive?.()
 			}
 			const rawCmdId = data.readInt16BE(17)
+			if (this.debugTraffic) {
+				this.pollHandlers.onDebug?.(`RX ${commandName(rawCmdId)} ${data.toString('hex')}`)
+			}
 
 			if (rawCmdId === -1) {
 				// Error response from Pandoras Box - skip invalid sequence
@@ -579,6 +757,15 @@ export class PBClient {
 						} else {
 							this.pollHandlers.onTransport?.(state)
 						}
+					}
+					break
+				}
+				case CommandId.GetSequenceTransparency: {
+					if (data.length >= 23) {
+						// Native range is linear 0-65535 (65535/100 = 655.35 per percent) - no descaling needed.
+						const value = data.readInt32BE(19)
+						this.pendingTransparencyResolve?.(value)
+						this.pendingTransparencyResolve = null
 					}
 					break
 				}
@@ -669,6 +856,15 @@ export class PBClient {
 			this.currentStatusRequestId = nextId
 			this.statusRequestPending = true
 			await this.send(CommandId.GetSeqTransportMode, [this.writeInt(nextId)])
+
+			// Piggyback an opacity poll onto the same round-robin turn (independently serialized/tracked).
+			this.getSequenceTransparency(nextId)
+				.then((value) => {
+					this.pollHandlers.onSequenceOpacity?.(nextId, value)
+				})
+				.catch((e: unknown) => {
+					this.pollHandlers.onDebug?.(`GetSequenceTransparency(${nextId}) error: ${e instanceof Error ? e.message : e}`)
+				})
 		}
 	}
 

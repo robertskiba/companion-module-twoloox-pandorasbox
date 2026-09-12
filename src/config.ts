@@ -3,6 +3,7 @@ import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
 export type DeviceConfig = {
 	host: string
 	domain: string
+	debugTraffic: boolean
 }
 
 export function GetConfigFields(): SomeCompanionConfigField[] {
@@ -28,6 +29,13 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			label: 'Domain',
 			default: '0',
 			regex: Regex.NUMBER,
+		},
+		{
+			type: 'checkbox',
+			id: 'debugTraffic',
+			width: 6,
+			label: 'Log protocol traffic (debug)',
+			default: false,
 		},
 	]
 }

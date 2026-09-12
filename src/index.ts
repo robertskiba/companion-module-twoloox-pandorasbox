@@ -26,6 +26,8 @@ import {
 	GetSequenceCountdownVariableValues,
 	GetSequenceNextCueVariableDefinitions,
 	GetSequenceNextCueVariableValues,
+	GetSequenceOpacityVariableDefinitions,
+	GetSequenceOpacityVariableValues,
 	type SequenceTime,
 } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
@@ -56,6 +58,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	private sequenceTimes: Map<number, SequenceTime> = new Map()
 	private sequenceCountdowns: Map<number, SequenceTime> = new Map()
 	private sequenceCueInfos: Map<number, CueInfo> = new Map()
+	private sequenceOpacities: Map<number, number> = new Map()
 
 	public getSequenceChoices(): { id: number; label: string }[] {
 		if (this.sequences.length === 0) {
@@ -161,6 +164,10 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 				this.sequenceCueInfos.set(seqId, cueInfo)
 				this.updateSequenceNextCueVariables()
 			},
+			onSequenceOpacity: (seqId, value) => {
+				this.sequenceOpacities.set(seqId, value)
+				this.updateSequenceOpacityVariables()
+			},
 			onSequencesUpdated: (sequences) => {
 				this.log('info', `Received ${sequences.length} sequences from Pandoras Box`)
 				this.sequences = sequences
@@ -180,7 +187,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 				this.log('error', err.message)
 				this.updateStatus(InstanceStatus.UnknownError, err.message)
 			},
-		})
+		}, config.debugTraffic)
 
 		this.client = client
 
@@ -227,6 +234,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 		const timeVars = GetSequenceTimeVariableDefinitions(this.sequences)
 		const countdownVars = GetSequenceCountdownVariableDefinitions(this.sequences)
 		const nextCueVars = GetSequenceNextCueVariableDefinitions(this.sequences)
+		const opacityVars = GetSequenceOpacityVariableDefinitions(this.sequences)
 		this.setVariableDefinitions({
 			...baseVars,
 			...seqVars,
@@ -234,12 +242,16 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			...timeVars,
 			...countdownVars,
 			...nextCueVars,
+			...opacityVars,
 		})
 
 		// Set the sequence variable values
 		const seqValues = GetSequenceVariableValues(this.sequences)
 		this.setVariableValues(seqValues)
-		this.log('debug', `Created ${this.sequences.length} sequence variables (name, status, time, countdown, nextcue)`)
+		this.log(
+			'debug',
+			`Created ${this.sequences.length} sequence variables (name, status, time, countdown, nextcue, opacity)`,
+		)
 	}
 
 	private updateSequenceStatusVariables(): void {
@@ -260,6 +272,11 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	private updateSequenceNextCueVariables(): void {
 		const nextCueValues = GetSequenceNextCueVariableValues(this.sequences, this.sequenceCueInfos)
 		this.setVariableValues(nextCueValues)
+	}
+
+	private updateSequenceOpacityVariables(): void {
+		const opacityValues = GetSequenceOpacityVariableValues(this.sequences, this.sequenceOpacities)
+		this.setVariableValues(opacityValues)
 	}
 
 	private updatePresetDefinitions(): void {

@@ -1,5 +1,6 @@
 import type { CompanionVariableDefinitions, CompanionVariableValues } from '@companion-module/base'
 import type { SequenceInfo, TransportState, CueInfo } from './client.js'
+import { SEQUENCE_OPACITY_MAX } from './constants.js'
 
 export function GetVariableDefinitions(): CompanionVariableDefinitions {
 	// Base definitions are empty now - all sequence-specific
@@ -41,6 +42,29 @@ export function GetSequenceStatusVariableValues(
 	const values: CompanionVariableValues = {}
 	for (const seq of sequences) {
 		values[`sequence_${seq.id}_status`] = states.get(seq.id) || 'Unknown'
+	}
+	return values
+}
+
+// Generate variable definitions for sequence opacity (visibility)
+export function GetSequenceOpacityVariableDefinitions(sequences: SequenceInfo[]): CompanionVariableDefinitions {
+	const defs: CompanionVariableDefinitions = {}
+	for (const seq of sequences) {
+		defs[`sequence_${seq.id}_opacity`] = { name: `Sequence ${seq.id} Opacity (%)` }
+	}
+	return defs
+}
+
+// Generate variable values for sequence opacity (visibility)
+export function GetSequenceOpacityVariableValues(
+	sequences: SequenceInfo[],
+	opacities: Map<number, number>,
+): CompanionVariableValues {
+	const values: CompanionVariableValues = {}
+	for (const seq of sequences) {
+		const opacity = opacities.get(seq.id)
+		values[`sequence_${seq.id}_opacity`] =
+			opacity !== undefined ? Math.round((opacity / SEQUENCE_OPACITY_MAX) * 100).toString() : '--'
 	}
 	return values
 }

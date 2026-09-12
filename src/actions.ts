@@ -1,5 +1,6 @@
 import type { CompanionActionDefinitions } from '@companion-module/base'
-import { PBClient, type TransportState } from './client.js'
+import { PBClient, type TransportState, type FadeCurve } from './client.js'
+import { SEQUENCE_OPACITY_MAX } from './constants.js'
 
 export enum ActionId {
 	SeqTransport = 'seq_transport',
@@ -18,6 +19,7 @@ export enum ActionId {
 	StoreActiveToBeginning = 'store_active_to_beginning',
 	ResetAll = 'reset_all',
 	RefreshSequences = 'refresh_sequences',
+	FadeSequenceVisibility = 'fade_sequence_visibility',
 }
 
 export interface SequenceChoice {
@@ -312,6 +314,47 @@ export function GetActionsList(
 				const client = getClient()
 				if (!client) return
 				await client.refreshSequences()
+			},
+		},
+		[ActionId.FadeSequenceVisibility]: {
+			name: 'Sequence Opacity Fade',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Sequence',
+					id: 'seq',
+					default: 1,
+					choices: getSequenceChoices(),
+					allowCustom: true,
+					regex: '/^\\d+$/',
+				},
+				{ type: 'number', label: 'Fade to Value (%)', id: 'value', default: 0, min: 0, max: 100, step: 1 },
+				{ type: 'number', label: 'Fading time (ms)', id: 'duration', default: 1000, min: 0, max: 60000, step: 1 },
+				{
+					type: 'dropdown',
+					label: 'Fade Curve',
+					id: 'curve',
+					default: 'linear',
+					choices: [
+						{ id: 'linear', label: 'Linear (recommended, evenly spaced)' },
+						{ id: 'ease_in', label: 'Ease In (slow start)' },
+						{ id: 'ease_out', label: 'Ease Out (slow end)' },
+						{ id: 'ease_in_out', label: 'Ease In-Out (slow start and end)' },
+						{ id: 's_curve', label: 'S-Curve (gentle sine)' },
+					],
+				},
+			],
+			callback: async (evt) => {
+				const client = getClient()
+				if (!client) return
+				const percent = Number(evt.options.value)
+				const rawValue = Math.round((percent / 100) * SEQUENCE_OPACITY_MAX)
+				await client.fadeSequenceVisibility(
+					Number(evt.options.seq),
+					rawValue,
+					Number(evt.options.duration),
+					evt.options.curve as FadeCurve,
+				)
 			},
 		},
 	}

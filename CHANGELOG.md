@@ -5,7 +5,17 @@ All notable changes to this module are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 3.1.0-beta.1
+## [3.1.0] - 2026-09-12
+
+### Added
+
+- **New action "Sequence Opacity Fade"**: smoothly fades a sequence's visibility in or out over a configurable duration (ms) to a target opacity (0-100%), with a choice of curve (Linear — recommended — Ease In, Ease Out, Ease In-Out, S-Curve). Runs in the background without blocking Companion and times accurately regardless of duration; retriggering a fade for the same sequence cancels the one in progress.
+  - Uses the device's `GetSequenceTransparency`/`SetSequenceTransparency` commands. On v8.11.3, these use different native scales — reads are linear 0-65535, writes only take visible effect in 0-255 — which the module accounts for internally; percentages in the UI are always 0-100%.
+- New live-updating variable `sequence_<id>_opacity` (0-100%) reflecting each sequence's current visibility, polled alongside the existing transport-status polling.
+- Raw PBAU protocol traffic (every sent/received message, as a hex dump with the decoded command name) is now logged at the module's `debug` log level — set the connection's log level to Debug in Companion to capture a trace for troubleshooting.
+- `eslint.config.mjs` so `yarn lint` actually runs — the project referenced ESLint 9 but shipped no config since its initial commit.
+- `.gitattributes` enforcing LF line endings, to stop Windows checkouts silently reintroducing CRLF and breaking lint/prettier.
+- Feedbacks documented in the README/HELP (they were already implemented, but the docs still said "no feedback implementation yet").
 
 ### Changed
 
@@ -19,16 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed TCP message framing: a single `data` event from the socket could contain more than one PBAU message concatenated together (or only part of one), but the module assumed exactly one message per event and silently dropped/misparsed the rest. Incoming bytes are now buffered and split into complete messages using the length field in each message's header.
 - Removed an unreachable `case 0xFFFF` branch in the PBAU response parser — a signed 16-bit read can never produce `0xFFFF` (only `-1` for the same bytes), so that branch never ran.
 - Fixed unhandled/misused promises in the sequence timecode polling loop and in `setPollSequences()`.
 - Corrected `runtime.type` in the manifest from `node18` to `node22` to match the module's actual `engines.node` requirement.
 - Added the required top-level `"type": "connection"` field to the manifest (missing before, and required by current manifest validation).
-
-### Added
-
-- `eslint.config.mjs` so `yarn lint` actually runs — the project referenced ESLint 9 but shipped no config since its initial commit.
-- `.gitattributes` enforcing LF line endings, to stop Windows checkouts silently reintroducing CRLF and breaking lint/prettier.
-- Feedbacks documented in the README/HELP (they were already implemented, but the docs still said "no feedback implementation yet").
 
 ## [3.0.1] - 2026-01-16
 
