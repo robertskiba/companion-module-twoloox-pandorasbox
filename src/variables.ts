@@ -200,17 +200,19 @@ export function GetSequenceNextCueVariableValues(
 	const values: CompanionVariableValues = {}
 	for (const seq of sequences) {
 		const cue = cueInfos.get(seq.id)
-		if (cue && cue.nextCueId !== 0) {
+		// The device reports nextCueId as -1 (not 0) when there's no next cue, alongside a literal
+		// "No Cue Found" name and an unmapped mode - treat any non-positive id as "no cue".
+		if (cue && cue.nextCueId > 0) {
 			const modeLetter = cueModeToLetter(cue.nextCueMode)
 			values[`sequence_${seq.id}_nextcue`] = `${cue.nextCueName} (${modeLetter} ${cue.nextCueId})`
 			values[`sequence_${seq.id}_nextcue_name`] = cue.nextCueName
 			values[`sequence_${seq.id}_nextcue_id`] = cue.nextCueId.toString()
 			values[`sequence_${seq.id}_nextcue_mode`] = modeLetter
 		} else {
-			values[`sequence_${seq.id}_nextcue`] = '-- (No Cue)'
-			values[`sequence_${seq.id}_nextcue_name`] = '--'
-			values[`sequence_${seq.id}_nextcue_id`] = '--'
-			values[`sequence_${seq.id}_nextcue_mode`] = '--'
+			values[`sequence_${seq.id}_nextcue`] = 'No Cue (-)'
+			values[`sequence_${seq.id}_nextcue_name`] = '-'
+			values[`sequence_${seq.id}_nextcue_id`] = '-'
+			values[`sequence_${seq.id}_nextcue_mode`] = '-'
 		}
 	}
 	return values
