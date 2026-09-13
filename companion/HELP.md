@@ -11,6 +11,7 @@ After adding the module in Companion:
 - **Host:** IP address of the Pandoras Box server (e.g. `192.168.1.100`)
 - **Port:** Default `6211`
 - **Domain:** Default `0`
+- **Log protocol traffic (debug):** Off by default. Enable and set the connection's log level to Debug in Companion to capture a hex dump of every sent/received PBAU message, useful for troubleshooting.
 
 The module automatically:
 
@@ -40,6 +41,10 @@ The module automatically:
 - Set Site IP Address
 - Apply GUI View
 
+**Sequence Opacity**
+- Sequence Opacity Fade: fade a sequence's visibility in/out to a target (0-100%) over a configurable duration, with a choice of curve (Linear, Ease In, Ease Out, Ease In-Out, S-Curve)
+- Live sequence opacity variable
+
 **Feedbacks**
 - Transport state matches (main transport)
 - Sequence transport state matches (per sequence)
@@ -59,7 +64,7 @@ The module automatically:
 
 **Protocol Details**
 - PBAU header uses mixed endianness (BE headers, LE sequence IDs)
-- 15+ commands implemented (Transport, Cue, Programming, Project, SMPTE)
+- 20+ commands implemented (Transport, Cue, Programming, Project, SMPTE, Opacity)
 - Adaptive polling rate based on sequence state
 
 ## Known Limitations

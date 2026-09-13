@@ -59,6 +59,8 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	private sequenceCountdowns: Map<number, SequenceTime> = new Map()
 	private sequenceCueInfos: Map<number, CueInfo> = new Map()
 	private sequenceOpacities: Map<number, number> = new Map()
+	private reconnectTimer: NodeJS.Timeout | undefined
+	private static readonly RECONNECT_INTERVAL_MS = 10000
 
 	public getSequenceChoices(): { id: number; label: string }[] {
 		if (this.sequences.length === 0) {
@@ -97,6 +99,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	}
 
 	public async destroy(): Promise<void> {
+		this.clearReconnectTimer()
 		if (this.sequenceRefreshTimer) {
 			clearInterval(this.sequenceRefreshTimer)
 			this.sequenceRefreshTimer = undefined
@@ -110,6 +113,27 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	}
 
 	public async configUpdated(config: DeviceConfig): Promise<void> {
+		this.clearReconnectTimer()
+		await this.connectToDevice(config)
+	}
+
+	private clearReconnectTimer(): void {
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer)
+			this.reconnectTimer = undefined
+		}
+	}
+
+	private scheduleReconnect(config: DeviceConfig): void {
+		this.clearReconnectTimer()
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = undefined
+			this.log('info', 'Attempting to reconnect to Pandoras Box...')
+			void this.connectToDevice(config)
+		}, TwolooxPandorasInstance.RECONNECT_INTERVAL_MS)
+	}
+
+	private async connectToDevice(config: DeviceConfig): Promise<void> {
 		if (this.sequenceRefreshTimer) {
 			clearInterval(this.sequenceRefreshTimer)
 			this.sequenceRefreshTimer = undefined
@@ -145,6 +169,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 					// Only report disconnect if this is the active client
 					if (this.client === client) {
 						this.updateStatus(InstanceStatus.Disconnected, 'Disconnected from Pandoras Box')
+						this.scheduleReconnect(config)
 					}
 				},
 				onTransport: (state) => {
@@ -226,8 +251,15 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			const msg = e?.message ?? 'Connect failed'
 			this.log('error', msg)
 			// If we connected TCP but never got a protocol response, this often indicates a wrong domain.
-			this.updateStatus(InstanceStatus.BadConfig, msg)
+			// We'll keep retrying automatically, so this reflects an ongoing failure, not a fatal config error.
+			this.updateStatus(InstanceStatus.ConnectionFailure, msg)
+			// Clear this.client first so the async 'close' event triggered by disconnect() below doesn't
+			// also run onDisconnected's status update/reconnect scheduling for the same failure.
+			if (this.client === client) {
+				this.client = undefined
+			}
 			client.disconnect()
+			this.scheduleReconnect(config)
 		}
 	}
 
