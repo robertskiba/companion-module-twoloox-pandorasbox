@@ -5,6 +5,16 @@ All notable changes to this module are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 3.1.1-beta.1
+
+### Fixed
+
+- The module no longer gets stuck permanently disconnected. Previously, if the TCP connection dropped (e.g. Pandoras Box Manager was closed and restarted) or the initial connection attempt failed, the module would report an error status and never try again until the config was re-saved. It now automatically retries every 10 seconds until the connection succeeds.
+
+### Added
+
+- New config option "Log protocol traffic (debug)" (off by default) to control the protocol-traffic hex dump logging added in 3.1.0 — previously always on, now opt-in per connection (still also requires the connection's Companion log level set to Debug to actually see it).
+
 ## [3.1.0] - 2026-09-12
 
 ### Added
