@@ -27,17 +27,6 @@ export enum CommandId {
 	GetSequenceName = 426,
 }
 
-// Cue play modes
-export enum CuePlayMode {
-	Pause = 0,
-	Play = 1, // Continue
-	Stop = 2,
-	Jump = 3,
-	Wait = 4,
-}
-
-export const DEFAULT_POLL_INTERVAL_MS = 200
-
 // Native range of the sequence transparency/opacity parameter on the device: linear 0-65535
 // (65535/100 = 655.35 per percent), confirmed empirically on hardware. The UI works in 0-100%
 // and scales to this.

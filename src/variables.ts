@@ -172,18 +172,20 @@ export function GetSequenceNextCueVariableDefinitions(sequences: SequenceInfo[])
 	return defs
 }
 
-// Convert cue mode number to letter
+// Convert cue mode number to letter.
+// Confirmed empirically on hardware (v8.11.3) - does not match the 0=Pause..4=Wait ordering some
+// community docs describe for cue play modes in general; this specific field uses its own order.
 function cueModeToLetter(mode: number): string {
 	switch (mode) {
-		case 0:
-			return 'P' // Pause
 		case 1:
 			return 'C' // Continue/Play
 		case 2:
 			return 'S' // Stop
 		case 3:
-			return 'J' // Jump
+			return 'P' // Pause
 		case 4:
+			return 'J' // Jump
+		case 5:
 			return 'W' // Wait
 		default:
 			return '?'

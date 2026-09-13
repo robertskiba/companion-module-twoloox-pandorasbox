@@ -50,7 +50,6 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	private client: PBClient | undefined
 	private state: ModuleState = {
 		transport: 'Unknown',
-		remaining: { h: 0, m: 0, s: 0, f: 0 },
 	}
 	private sequences: SequenceInfo[] = []
 	private sequenceRefreshTimer: NodeJS.Timeout | undefined
@@ -82,15 +81,20 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 		)
 	}
 
-	public async init(config: DeviceConfig): Promise<void> {
-		this.updateActionDefinitions()
+	private updateFeedbackDefinitions(): void {
 		this.setFeedbackDefinitions(
 			GetFeedbacksList(
 				() => this.state,
 				() => this.getSequenceChoices(),
 				(seqId) => this.sequenceStates.get(seqId) || 'Unknown',
+				(seqId) => this.sequenceCountdowns.get(seqId),
 			),
 		)
+	}
+
+	public async init(config: DeviceConfig): Promise<void> {
+		this.updateActionDefinitions()
+		this.updateFeedbackDefinitions()
 		const initialPresets = GetPresetsList(this.sequences, () => this.sequenceStates)
 		this.setPresetDefinitions(initialPresets.structure, initialPresets.presets)
 		this.setVariableDefinitions(GetVariableDefinitions())
@@ -197,14 +201,19 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 					this.updateSequenceOpacityVariables()
 				},
 				onSequencesUpdated: (sequences) => {
+					// Ignore late responses from a client that's no longer the active one (e.g. config
+					// was changed again while this request was still in flight).
+					if (this.client !== client) return
 					this.log('info', `Received ${sequences.length} sequences from Pandoras Box`)
 					this.sequences = sequences
 					// Update actions with new sequence choices
 					this.updateActionDefinitions()
+					// Update feedbacks with new sequence choices
+					this.updateFeedbackDefinitions()
 					// Update variable definitions and values for sequences
 					this.updateSequenceVariables()
 					// Start polling sequence statuses
-					this.client?.setPollSequences(sequences.map((s) => s.id))
+					client.setPollSequences(sequences.map((s) => s.id))
 					// Update presets with new sequences
 					this.updatePresetDefinitions()
 				},

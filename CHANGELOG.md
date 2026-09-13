@@ -5,11 +5,17 @@ All notable changes to this module are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 3.1.1-beta.1
+## [Unreleased] - 3.1.1-beta.4
 
 ### Fixed
 
+- Fixed the next-cue mode letter shown in `sequence_<id>_nextcue` / `sequence_<id>_nextcue_mode` (e.g. "P"/"C"/"S"/"J"/"W"): the numeric mode values reported by the device for this field don't follow the 0=Pause..4=Wait ordering used elsewhere - confirmed empirically, the real mapping is 1=Play, 2=Stop, 3=Pause, 4=Jump, 5=Wait. Previously Pause showed as "J", Jump as "W", and Wait as "?".
 - The module no longer gets stuck permanently disconnected. Previously, if the TCP connection dropped (e.g. Pandoras Box Manager was closed and restarted) or the initial connection attempt failed, the module would report an error status and never try again until the config was re-saved. It now automatically retries every 10 seconds until the connection succeeds.
+- Fixed a deadlock: if any sequence ever returned an error response to a status poll (e.g. it had been deleted), the module would stop updating transport-status and opacity variables/feedbacks for *all* sequences, permanently, until reconnected.
+- Fixed "Remaining cue under threshold" feedback: it read from a value that was never actually updated, so it always evaluated as true regardless of the real countdown. It's now a per-sequence feedback (like "Sequence Transport State") backed by the working per-sequence countdown data. Existing uses of this feedback will need the new "Sequence" option set.
+- Fixed feedback definitions never being refreshed once sequences were discovered: any feedback's "Sequence" dropdown (e.g. "Sequence Transport State", "Remaining cue under threshold") stayed stuck on the "Sequence 1 (not connected)" placeholder forever instead of listing the real sequences, even though the equivalent action/preset dropdowns updated correctly.
+- Fixed a narrow race where re-triggering "Sequence Opacity Fade" for the same sequence in very quick succession could leave two fades running concurrently against each other instead of the newer one cleanly replacing the older.
+- Removed unreachable code paths left over from earlier refactors (an unused main-connection handler for a command that's only ever sent per-sequence, and unused constants).
 
 ### Added
 

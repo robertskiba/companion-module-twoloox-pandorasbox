@@ -9,18 +9,20 @@ export enum FeedbackId {
 
 export interface ModuleState {
 	transport: TransportState
-	remaining: {
-		h: number
-		m: number
-		s: number
-		f: number
-	}
+}
+
+export interface SequenceCountdown {
+	h: number
+	m: number
+	s: number
+	f: number
 }
 
 export function GetFeedbacksList(
 	getState: () => ModuleState,
 	getSequenceChoices: () => { id: number; label: string }[],
 	getSequenceState: (seqId: number) => TransportState,
+	getSequenceCountdown: (seqId: number) => SequenceCountdown | undefined,
 ): CompanionFeedbackDefinitions {
 	return {
 		[FeedbackId.TransportState]: {
@@ -49,8 +51,16 @@ export function GetFeedbacksList(
 		[FeedbackId.RemainingCueThreshold]: {
 			type: 'boolean',
 			name: 'Remaining cue under threshold',
-			description: 'True when remaining time until next cue is below threshold (seconds)',
+			description: 'True when remaining time until next cue is below threshold (seconds) for the selected sequence',
 			options: [
+				{
+					type: 'dropdown',
+					id: 'sequence',
+					label: 'Sequence',
+					default: 1,
+					choices: getSequenceChoices(),
+					allowCustom: true,
+				},
 				{
 					type: 'number',
 					id: 'threshold',
@@ -63,8 +73,10 @@ export function GetFeedbacksList(
 			],
 			defaultStyle: {},
 			callback: (fb: CompanionFeedbackBooleanEvent) => {
-				const rem = getState().remaining
-				const totalSec = rem.h * 3600 + rem.m * 60 + rem.s
+				const seqId = Number(fb.options.sequence)
+				const countdown = getSequenceCountdown(seqId)
+				if (!countdown) return false
+				const totalSec = countdown.h * 3600 + countdown.m * 60 + countdown.s
 				return totalSec <= Number(fb.options.threshold)
 			},
 		},

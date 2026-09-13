@@ -11,7 +11,7 @@ export interface SequenceInfo {
 export interface CueInfo {
 	nextCueId: number
 	nextCueName: string
-	nextCueMode: number // 0=Pause, 1=Play, 2=Stop, 3=Jump, 4=Wait
+	nextCueMode: number // 1=Play, 2=Stop, 3=Pause, 4=Jump, 5=Wait (confirmed empirically, see cueModeToLetter)
 }
 
 // 'PBAU'(4) + preHeader(1) + domain(4) + length(2) + postHeader(5) + checksum(1), body follows after this.
@@ -69,7 +69,6 @@ export interface PollHandlers {
 	onSequenceCountdown?: (seqId: number, h: number, m: number, s: number, f: number) => void
 	onSequenceCueInfo?: (seqId: number, cueInfo: CueInfo) => void
 	onSequenceOpacity?: (seqId: number, value: number) => void
-	onNextCueTime?: (h: number, m: number, s: number, f: number) => void
 	onTransport?: (state: TransportState) => void
 	onSequenceTransport?: (seqId: number, state: TransportState) => void
 	onSequencesUpdated?: (sequences: SequenceInfo[]) => void
@@ -353,10 +352,14 @@ export class PBClient {
 
 	// GetSequenceTransparency responses don't echo the sequenceId, so requests are serialized one at a time.
 	private pendingTransparencyResolve: ((value: number) => void) | null = null
+	private pendingTransparencyReject: ((err: Error) => void) | null = null
 	private transparencyRequestLock: Promise<unknown> = Promise.resolve()
 
 	// Active fade timers per sequence, so re-triggering a fade cancels the previous one for that sequence.
+	// The token map guards against a rare race: if a new fade for the same sequence starts while an
+	// older one is still awaiting its initial GetSequenceTransparency, the older one must not proceed.
 	private activeFades: Map<number, NodeJS.Timeout> = new Map()
+	private activeFadeTokens: Map<number, symbol> = new Map()
 	private static readonly FADE_STEP_INTERVAL_MS = 33 // ~30 steps/sec, matches the module's other real-time polling rates
 
 	// Polling intervals
@@ -409,6 +412,7 @@ export class PBClient {
 			clearInterval(timer)
 		}
 		this.activeFades.clear()
+		this.activeFadeTokens.clear()
 		if (this.socket) {
 			this.socket.destroy()
 			this.socket = null
@@ -504,15 +508,21 @@ export class PBClient {
 			new Promise<number>((resolve, reject) => {
 				const timeout = setTimeout(() => {
 					this.pendingTransparencyResolve = null
+					this.pendingTransparencyReject = null
 					reject(new Error(`Timed out waiting for transparency of sequence ${sequenceId}`))
 				}, 2000)
 				this.pendingTransparencyResolve = (value) => {
 					clearTimeout(timeout)
 					resolve(value)
 				}
+				this.pendingTransparencyReject = (err) => {
+					clearTimeout(timeout)
+					reject(err)
+				}
 				this.send(CommandId.GetSequenceTransparency, [this.writeInt(sequenceId)]).catch((e: unknown) => {
 					clearTimeout(timeout)
 					this.pendingTransparencyResolve = null
+					this.pendingTransparencyReject = null
 					reject(e instanceof Error ? e : new Error(String(e)))
 				})
 			})
@@ -554,8 +564,20 @@ export class PBClient {
 			this.activeFades.delete(sequenceId)
 		}
 
+		// Claim this sequence for this call. getSequenceTransparency() below can take a moment (it's
+		// serialized behind other pending requests), and if another fade for the same sequence starts
+		// in that window, the map-based cancellation above can miss it (neither call has registered a
+		// timer yet). The token lets both the code below and the running timer notice they've been
+		// superseded and stop, instead of leaving an orphaned interval fighting the newer fade.
+		const token = Symbol()
+		this.activeFadeTokens.set(sequenceId, token)
+
 		const target = Math.max(0, Math.min(SEQUENCE_OPACITY_MAX, Math.round(targetValue)))
 		const startValue = await this.getSequenceTransparency(sequenceId)
+
+		if (this.activeFadeTokens.get(sequenceId) !== token) {
+			return // Superseded by a newer fade while we were awaiting the current value.
+		}
 
 		if (durationMs <= 0 || startValue === target) {
 			await this.setSequenceTransparency(sequenceId, target)
@@ -570,6 +592,12 @@ export class PBClient {
 		// hundreds of ticks a long fade needs - a 10s fade could otherwise measurably overrun to 14s+.
 		const startTime = Date.now()
 		const timer = setInterval(() => {
+			if (this.activeFadeTokens.get(sequenceId) !== token) {
+				clearInterval(timer)
+				this.activeFades.delete(sequenceId)
+				return
+			}
+
 			const progress = Math.min(1, (Date.now() - startTime) / durationMs)
 			const value = Math.round(startValue + delta * applyCurve(progress))
 
@@ -716,12 +744,27 @@ export class PBClient {
 			}
 
 			if (rawCmdId === -1) {
-				// Error response from Pandoras Box - skip invalid sequence
+				// Error response from Pandoras Box. A poll turn fires both a transport-status and an
+				// opacity request for the same sequence, so an error here could belong to either one -
+				// there's no way to tell which for certain. statusRequestPending is always cleared below
+				// so the poll queue can never get stuck waiting for a response that will never arrive;
+				// the sequence is only dropped from active polling if there's no more likely culprit
+				// (a simultaneously pending transparency request) to blame instead.
+				const transparencyReject = this.pendingTransparencyReject
+				this.pendingTransparencyResolve = null
+				this.pendingTransparencyReject = null
+
 				if (this.currentStatusRequestId !== null) {
-					// Remove invalid sequence from polling list
-					const invalidId = this.currentStatusRequestId
-					this.pollSequenceIds = this.pollSequenceIds.filter((id) => id !== invalidId)
+					this.statusRequestPending = false
+					if (!transparencyReject) {
+						const invalidId = this.currentStatusRequestId
+						this.pollSequenceIds = this.pollSequenceIds.filter((id) => id !== invalidId)
+					}
 					void this.processStatusRequestQueue()
+				}
+
+				if (transparencyReject) {
+					transparencyReject(new Error('Sequence transparency query returned an error response'))
 				}
 				if (this.currentSequenceNameId !== null) {
 					// Remove from pending IDs and skip to next
@@ -766,18 +809,12 @@ export class PBClient {
 						const value = data.readInt32BE(19)
 						this.pendingTransparencyResolve?.(value)
 						this.pendingTransparencyResolve = null
+						this.pendingTransparencyReject = null
 					}
 					break
 				}
-				// GetSeqTime is handled by per-sequence connections, not main connection
-				case CommandId.GetRemainingTimeUntilNextCue: {
-					const h = data.readInt32BE(19)
-					const m = data.readInt32BE(23)
-					const s = data.readInt32BE(27)
-					const f = data.readInt32BE(31)
-					this.pollHandlers.onNextCueTime?.(h, m, s, f)
-					break
-				}
+				// GetSeqTime and GetRemainingTimeUntilNextCue are handled by per-sequence connections;
+				// the main connection never sends GetRemainingTimeUntilNextCue, so no case for it here.
 				case CommandId.GetSequenceIds: {
 					// Response format: Int count (BE), Int mystery (BE), then count * Int IDs (LE)!
 					const count = data.readInt32BE(19)
