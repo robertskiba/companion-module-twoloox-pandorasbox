@@ -25,6 +25,7 @@ The module automatically:
 - Play / Pause / Stop sequences
 - Goto Cue, Next/Last Cue
 - Ignore Next Cue
+- Set Playhead (absolute or relative, accepts hh:mm:ss:ff or plain digits)
 - SMPTE Timecode Mode (None / Send / Receive)
 - Real-time timecode display (30fps)
 - Sequence selection for editing

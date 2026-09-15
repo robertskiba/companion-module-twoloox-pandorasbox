@@ -3,6 +3,7 @@ export const PR_PORT = 6211
 export enum CommandId {
 	SetSeqTransportMode = 3,
 	MoveSeqToCue = 4,
+	MoveSeqToTime = 5,
 	MoveSeqToLastNextCue = 7,
 	SetSequenceTransparency = 8,
 	ResetAll = 9,

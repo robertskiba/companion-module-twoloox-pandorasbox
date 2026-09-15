@@ -17,10 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed feedback definitions never being refreshed once sequences were discovered: any feedback's "Sequence" dropdown (e.g. "Sequence Transport State", "Remaining cue under threshold") stayed stuck on the "Sequence 1 (not connected)" placeholder forever instead of listing the real sequences, even though the equivalent action/preset dropdowns updated correctly.
 - Fixed a narrow race where re-triggering "Sequence Opacity Fade" for the same sequence in very quick succession could leave two fades running concurrently against each other instead of the newer one cleanly replacing the older.
 - Removed unreachable code paths left over from earlier refactors (an unused main-connection handler for a command that's only ever sent per-sequence, and unused constants).
+- Fixed umlauts and other special characters in sequence and cue names showing up mangled (e.g. "EigenstÃ¤ndig" instead of "Eigenständig"). The device sends these names as UTF-8, but the module was decoding them as Latin-1.
 
 ### Added
 
 - New config option "Log protocol traffic (debug)" (off by default) to control the protocol-traffic hex dump logging added in 3.1.0 — previously always on, now opt-in per connection (still also requires the connection's Companion log level set to Debug to actually see it).
+- New action "Set Playhead": moves a sequence's playhead to an absolute time, or by a relative offset from its current position. Accepts `hh:mm:ss:ff`, a shorter right-aligned form, or plain digits without colons (e.g. `1000` = 10s) - relative offsets also accept a leading `+`/`-`. Supports "Learn" to read back the sequence's current time into the action.
+- New variables `sequence_<id>_prevcue` / `_prevcue_name` / `_prevcue_id` / `_prevcue_mode`, mirroring the existing next-cue variables but for the last cue behind the playhead. The device already sends this data in the same response used for the next-cue variables; it just wasn't being read.
+- New variables `sequence_<id>_countup` / `_countup_hh` / `_countup_mm` / `_countup_ss` / `_countup_ff`: time elapsed since the last (previous) cue, complementing the existing next-cue countdown. The device has no direct command for this, so it's computed from the sequence's current time and the previous cue's own position in the timeline; the frames digit mirrors the sequence's current frame counter so it keeps updating smoothly every poll instead of stalling for part of every second.
 
 ## [3.1.0] - 2026-09-12
 

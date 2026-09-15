@@ -9,6 +9,15 @@ export interface SequenceInfo {
 }
 
 export interface CueInfo {
+	previousCueId: number
+	previousCueName: string
+	previousCueMode: number // same mode encoding as nextCueMode - see cueModeToLetter
+	// The previous cue's own position in the sequence timeline (not a countdown) - used to compute
+	// a "time since last cue" countup client-side, since the device has no direct command for it.
+	previousCueH: number
+	previousCueM: number
+	previousCueS: number
+	previousCueF: number
 	nextCueId: number
 	nextCueName: string
 	nextCueMode: number // 1=Play, 2=Stop, 3=Pause, 4=Jump, 5=Wait (confirmed empirically, see cueModeToLetter)
@@ -242,17 +251,29 @@ class SequenceConnection {
 					offset += 16
 
 					// previousCueId
+					if (offset + 4 > data.length) return
+					const previousCueId = data.readInt32BE(offset)
 					offset += 4
 
 					// previousCueName - StringNarrow: 2-byte length + chars
 					if (offset + 2 > data.length) return
 					const prevNameLen = data.readInt16BE(offset)
-					offset += 2 + prevNameLen
+					offset += 2
+					if (offset + prevNameLen > data.length) return
+					const previousCueName = data.toString('utf8', offset, offset + prevNameLen)
+					offset += prevNameLen
 
 					// previousCueTime (4 ints)
+					if (offset + 16 > data.length) return
+					const previousCueH = data.readInt32BE(offset)
+					const previousCueM = data.readInt32BE(offset + 4)
+					const previousCueS = data.readInt32BE(offset + 8)
+					const previousCueF = data.readInt32BE(offset + 12)
 					offset += 16
 
 					// previousCueMode
+					if (offset + 4 > data.length) return
+					const previousCueMode = data.readInt32BE(offset)
 					offset += 4
 
 					// nextCueId
@@ -265,7 +286,7 @@ class SequenceConnection {
 					const nextNameLen = data.readInt16BE(offset)
 					offset += 2
 					if (offset + nextNameLen > data.length) return
-					const nextCueName = data.toString('latin1', offset, offset + nextNameLen)
+					const nextCueName = data.toString('utf8', offset, offset + nextNameLen)
 					offset += nextNameLen
 
 					// nextCueTime (4 ints)
@@ -275,7 +296,18 @@ class SequenceConnection {
 					if (offset + 4 > data.length) return
 					const nextCueMode = data.readInt32BE(offset)
 
-					this.onCueInfo({ nextCueId, nextCueName, nextCueMode })
+					this.onCueInfo({
+						previousCueId,
+						previousCueName,
+						previousCueMode,
+						previousCueH,
+						previousCueM,
+						previousCueS,
+						previousCueF,
+						nextCueId,
+						nextCueName,
+						nextCueMode,
+					})
 				} catch (e) {
 					this.onDebug?.(`SeqConn[${this.seqId}] CueInfo parse error: ${e}`)
 				}
@@ -499,6 +531,16 @@ export class PBClient {
 
 	async nextOrLastCue(sequenceId: number, isNext: boolean): Promise<void> {
 		await this.send(CommandId.MoveSeqToLastNextCue, [this.writeInt(sequenceId), Buffer.from([isNext ? 1 : 0])])
+	}
+
+	async setPlayhead(sequenceId: number, h: number, m: number, s: number, f: number): Promise<void> {
+		await this.send(CommandId.MoveSeqToTime, [
+			this.writeInt(sequenceId),
+			this.writeInt(h),
+			this.writeInt(m),
+			this.writeInt(s),
+			this.writeInt(f),
+		])
 	}
 
 	async getSequenceTransparency(sequenceId: number): Promise<number> {
@@ -835,17 +877,15 @@ export class PBClient {
 					break
 				}
 				case CommandId.GetSequenceName: {
-					// Response format: Short strLen, then strLen bytes (ASCII string)
+					// Response format: Short strLen, then strLen bytes (UTF-8 string)
 					// No seqId in response! We track it from the request
 					if (this.currentSequenceNameId === null) {
 						break
 					}
 
 					const strLen = data.readInt16BE(19)
-					let name = ''
-					for (let i = 0; i < strLen && 21 + i < data.length; i++) {
-						name += String.fromCharCode(data.readUInt8(21 + i))
-					}
+					const nameEnd = Math.min(21 + strLen, data.length)
+					const name = data.toString('utf8', 21, nameEnd)
 
 					this.pendingSequenceNames.set(this.currentSequenceNameId, name)
 					this.currentSequenceNameId = null

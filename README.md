@@ -8,6 +8,7 @@ Companion module for controlling **twoloox Pandoras Box** media servers via the 
 - Play/Pause/Stop sequences
 - Goto Cue, Next/Last Cue
 - Ignore Next Cue
+- Set Playhead (absolute or relative, accepts hh:mm:ss:ff or plain digits, e.g. `1000` = 10s)
 - SMPTE Timecode Mode (None/Send/Receive)
 - Real-time timecode display (30fps)
 - Sequence selection for editing
