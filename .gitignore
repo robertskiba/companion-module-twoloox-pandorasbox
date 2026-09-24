@@ -1,10 +1,13 @@
 # Dependencies
 node_modules/
+package-lock.json
+/.yarn
 
 # Build output
 dist/
 pkg/
 *.tgz
+DEBUG-*
 
 # IDE
 .vscode/

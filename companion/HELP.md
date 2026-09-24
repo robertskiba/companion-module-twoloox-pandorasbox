@@ -47,7 +47,6 @@ The module automatically:
 - Live sequence opacity variable
 
 **Feedbacks**
-- Transport state matches (main transport)
 - Sequence transport state matches (per sequence)
 - Remaining time until next cue under threshold
 

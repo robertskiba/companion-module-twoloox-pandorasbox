@@ -4,7 +4,7 @@
 	"name": "twoloox-pandorasbox",
 	"shortname": "pandorasbox",
 	"description": "Control twoloox Pandoras Box V8 and newer.",
-	"version": "3.1.1",
+	"version": "3.1.2",
 	"isPrerelease": false,
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-twoloox-pandorasbox.git",

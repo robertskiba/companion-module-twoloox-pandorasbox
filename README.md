@@ -36,7 +36,6 @@ Companion module for controlling **twoloox Pandoras Box** media servers via the 
 - Real-time status variables
 
 ✅ **Feedbacks**
-- Transport state matches (main transport)
 - Sequence transport state matches (per sequence)
 - Remaining time until next cue under threshold
 

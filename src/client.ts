@@ -69,6 +69,17 @@ const FADE_CURVES: Record<FadeCurve, (t: number) => number> = {
 	s_curve: (t) => -(Math.cos(Math.PI * t) - 1) / 2,
 }
 
+// The device answered a request with its generic error response (command id -1).
+class DeviceErrorResponse extends Error {}
+
+interface PendingRequest {
+	cmdId: CommandId
+	parts: Buffer[]
+	resolve: (data: Buffer) => void
+	reject: (err: Error) => void
+	timer?: NodeJS.Timeout
+}
+
 export interface PollHandlers {
 	/** Called once when we receive the first valid PBAU packet for the configured domain */
 	onProtocolAlive?: () => void
@@ -78,7 +89,6 @@ export interface PollHandlers {
 	onSequenceCountdown?: (seqId: number, h: number, m: number, s: number, f: number) => void
 	onSequenceCueInfo?: (seqId: number, cueInfo: CueInfo) => void
 	onSequenceOpacity?: (seqId: number, value: number) => void
-	onTransport?: (state: TransportState) => void
 	onSequenceTransport?: (seqId: number, state: TransportState) => void
 	onSequencesUpdated?: (sequences: SequenceInfo[]) => void
 	onError?: (err: Error) => void
@@ -172,6 +182,11 @@ class SequenceConnection {
 
 	updateState(state: TransportState): void {
 		this.currentState = state
+	}
+
+	// False once the socket has failed or closed - the connection is then dead for good and must be replaced.
+	isAlive(): boolean {
+		return this.socket !== null
 	}
 
 	private startPolling(): void {
@@ -367,14 +382,9 @@ export class PBClient {
 	private statusPollTimer: NodeJS.Timeout | null = null
 	private socket: net.Socket | null = null
 	private connecting = false
-	private pendingSequenceIds: number[] = []
-	private pendingSequenceNames: Map<number, string> = new Map()
-	private sequenceNameQueue: number[] = []
-	private currentSequenceNameId: number | null = null
 	private pollSequenceIds: number[] = []
-	private statusRequestQueue: number[] = []
-	private currentStatusRequestId: number | null = null
-	private statusRequestPending = false
+	private pollRoundRunning = false
+	private refreshingSequences = false
 	private sequenceStates: Map<number, TransportState> = new Map()
 	private gotAnyResponse = false
 	private rxBuffer: Buffer = Buffer.alloc(0)
@@ -382,10 +392,13 @@ export class PBClient {
 	// Per-sequence connections for timecode polling
 	private sequenceConnections: Map<number, SequenceConnection> = new Map()
 
-	// GetSequenceTransparency responses don't echo the sequenceId, so requests are serialized one at a time.
-	private pendingTransparencyResolve: ((value: number) => void) | null = null
-	private pendingTransparencyReject: ((err: Error) => void) | null = null
-	private transparencyRequestLock: Promise<unknown> = Promise.resolve()
+	// Responses to status/transparency/sequence-list queries don't say which sequence they belong to,
+	// and the device's error response doesn't say which request failed. So these queries go through
+	// one queue with at most one request outstanding: every response - including an error - then
+	// unambiguously belongs to the current request. The timeout keeps a lost response from stalling it.
+	private requestQueue: PendingRequest[] = []
+	private currentRequest: PendingRequest | null = null
+	private static readonly REQUEST_TIMEOUT_MS = 1000
 
 	// Active fade timers per sequence, so re-triggering a fade cancels the previous one for that sequence.
 	// The token map guards against a rare race: if a new fade for the same sequence starts while an
@@ -424,6 +437,7 @@ export class PBClient {
 				this.connecting = false
 				this.socket = null
 				this.stopPolling()
+				this.failAllRequests(new Error('Connection closed'))
 				this.pollHandlers.onDisconnected?.()
 			})
 
@@ -449,6 +463,7 @@ export class PBClient {
 			this.socket.destroy()
 			this.socket = null
 		}
+		this.failAllRequests(new Error('Disconnected'))
 		this.rxBuffer = Buffer.alloc(0)
 	}
 
@@ -472,48 +487,40 @@ export class PBClient {
 		this.pollHandlers = handlers
 	}
 
+	// Called on every sequence refresh (every 10s), so this also replaces per-sequence timecode
+	// connections that have failed or dropped since - otherwise they'd stay dead until a full reconnect.
 	setPollSequences(sequenceIds: number[]): void {
 		this.pollSequenceIds = sequenceIds
 
-		// Create/update sequence connections for timecode polling
-		void this.updateSequenceConnections(sequenceIds)
-	}
-
-	private async updateSequenceConnections(sequenceIds: number[]): Promise<void> {
-		// Remove connections for sequences no longer in the list
 		for (const [seqId, conn] of this.sequenceConnections.entries()) {
-			if (!sequenceIds.includes(seqId)) {
+			if (!sequenceIds.includes(seqId) || !conn.isAlive()) {
 				conn.disconnect()
 				this.sequenceConnections.delete(seqId)
 			}
 		}
 
-		// Create connections for new sequences
 		for (const seqId of sequenceIds) {
-			if (!this.sequenceConnections.has(seqId)) {
-				const conn = new SequenceConnection(
-					this.host,
-					this.domain,
-					seqId,
-					(h, m, s, f) => {
-						this.pollHandlers.onSequenceTime?.(seqId, h, m, s, f)
-					},
-					(h, m, s, f) => {
-						this.pollHandlers.onSequenceCountdown?.(seqId, h, m, s, f)
-					},
-					(cueInfo) => {
-						this.pollHandlers.onSequenceCueInfo?.(seqId, cueInfo)
-					},
-					undefined, // No debug logging for sequence connections
-				)
-				this.sequenceConnections.set(seqId, conn)
-
-				try {
-					await conn.connect()
-				} catch (e) {
-					this.pollHandlers.onDebug?.(`Failed to connect sequence ${seqId}: ${e}`)
-				}
-			}
+			if (this.sequenceConnections.has(seqId)) continue
+			const conn = new SequenceConnection(
+				this.host,
+				this.domain,
+				seqId,
+				(h, m, s, f) => {
+					this.pollHandlers.onSequenceTime?.(seqId, h, m, s, f)
+				},
+				(h, m, s, f) => {
+					this.pollHandlers.onSequenceCountdown?.(seqId, h, m, s, f)
+				},
+				(cueInfo) => {
+					this.pollHandlers.onSequenceCueInfo?.(seqId, cueInfo)
+				},
+				undefined, // No debug logging for sequence connections
+			)
+			conn.updateState(this.sequenceStates.get(seqId) ?? 'Unknown')
+			this.sequenceConnections.set(seqId, conn)
+			conn.connect().catch((e: unknown) => {
+				this.pollHandlers.onDebug?.(`Failed to connect sequence ${seqId}: ${e instanceof Error ? e.message : e}`)
+			})
 		}
 	}
 
@@ -544,34 +551,10 @@ export class PBClient {
 	}
 
 	async getSequenceTransparency(sequenceId: number): Promise<number> {
-		// Responses to GetSequenceTransparency don't echo the sequenceId, so only one such
-		// request may be in flight at a time - queue concurrent callers behind each other.
-		const run = async (): Promise<number> =>
-			new Promise<number>((resolve, reject) => {
-				const timeout = setTimeout(() => {
-					this.pendingTransparencyResolve = null
-					this.pendingTransparencyReject = null
-					reject(new Error(`Timed out waiting for transparency of sequence ${sequenceId}`))
-				}, 2000)
-				this.pendingTransparencyResolve = (value) => {
-					clearTimeout(timeout)
-					resolve(value)
-				}
-				this.pendingTransparencyReject = (err) => {
-					clearTimeout(timeout)
-					reject(err)
-				}
-				this.send(CommandId.GetSequenceTransparency, [this.writeInt(sequenceId)]).catch((e: unknown) => {
-					clearTimeout(timeout)
-					this.pendingTransparencyResolve = null
-					this.pendingTransparencyReject = null
-					reject(e instanceof Error ? e : new Error(String(e)))
-				})
-			})
-
-		const result = this.transparencyRequestLock.then(run, run)
-		this.transparencyRequestLock = result.catch(() => undefined)
-		return result
+		const data = await this.request(CommandId.GetSequenceTransparency, [this.writeInt(sequenceId)])
+		if (data.length < 23) throw new Error(`Short GetSequenceTransparency response for sequence ${sequenceId}`)
+		// Native range is linear 0-65535 (65535/100 = 655.35 per percent) - no descaling needed.
+		return data.readInt32BE(19)
 	}
 
 	async setSequenceTransparency(sequenceId: number, value: number): Promise<void> {
@@ -698,33 +681,81 @@ export class PBClient {
 	}
 
 	async refreshSequences(): Promise<void> {
-		this.pendingSequenceIds = []
-		this.pendingSequenceNames.clear()
-		this.sequenceNameQueue = []
-		await this.send(CommandId.GetSequenceIds, [])
-	}
+		if (this.refreshingSequences) return
+		this.refreshingSequences = true
+		try {
+			const idsData = await this.request(CommandId.GetSequenceIds, [])
+			// Response format: Int count (BE), Int mystery (BE), then count * Int IDs (LE)!
+			if (idsData.length < 27) throw new Error('Short GetSequenceIds response')
+			const count = idsData.readInt32BE(19)
+			const ids: number[] = []
+			for (let i = 0, offset = 27; i < count && offset + 4 <= idsData.length; i++, offset += 4) {
+				ids.push(idsData.readInt32LE(offset))
+			}
 
-	private async fetchSequenceName(seqId: number): Promise<void> {
-		this.currentSequenceNameId = seqId
-		await this.send(CommandId.GetSequenceName, [this.writeInt(seqId)])
+			const sequences: SequenceInfo[] = []
+			for (const id of ids) {
+				try {
+					const nameData = await this.request(CommandId.GetSequenceName, [this.writeInt(id)])
+					// Response format: Short strLen, then strLen bytes (UTF-8 string)
+					const strLen = nameData.length >= 21 ? nameData.readInt16BE(19) : 0
+					const name = nameData.toString('utf8', 21, Math.min(21 + strLen, nameData.length))
+					sequences.push({ id, name: name || `Sequence ${id}` })
+				} catch (e) {
+					// An error response means the id isn't a valid sequence (anymore) - leave it out.
+					// Anything else (e.g. a timeout) shouldn't make a real sequence vanish from the UI.
+					if (!(e instanceof DeviceErrorResponse)) sequences.push({ id, name: `Sequence ${id}` })
+				}
+			}
+			this.pollHandlers.onSequencesUpdated?.(sequences)
+		} catch (e) {
+			this.pollHandlers.onDebug?.(`Sequence refresh failed: ${e instanceof Error ? e.message : e}`)
+		} finally {
+			this.refreshingSequences = false
+		}
 	}
 
 	private startPolling(): void {
 		this.stopPolling()
 
-		// Reset pending flags when starting fresh
-		this.statusRequestPending = false
-		this.statusRequestQueue = []
-
-		// Status polling: 5x per second for all sequences
+		// Status polling: a round over all sequences 5x per second (a new round only starts once the
+		// previous one has finished). Timecode polling is handled by the per-sequence connections.
 		this.statusPollTimer = setInterval(() => {
-			if (this.statusRequestQueue.length === 0 && this.pollSequenceIds.length > 0) {
-				this.statusRequestQueue = [...this.pollSequenceIds]
-				void this.processStatusRequestQueue()
+			if (!this.pollRoundRunning && this.pollSequenceIds.length > 0) {
+				void this.runStatusPollRound()
 			}
 		}, PBClient.STATUS_POLL_INTERVAL)
+	}
 
-		// Timecode polling is now handled by per-sequence connections
+	private async runStatusPollRound(): Promise<void> {
+		this.pollRoundRunning = true
+		try {
+			for (const seqId of [...this.pollSequenceIds]) {
+				if (!this.socket) return
+
+				let state: TransportState
+				try {
+					const data = await this.request(CommandId.GetSeqTransportMode, [this.writeInt(seqId)])
+					if (data.length < 23) continue
+					const stateInt = data.readInt32BE(19)
+					state = stateInt === 1 ? 'Play' : stateInt === 2 ? 'Stop' : stateInt === 3 ? 'Pause' : 'Unknown'
+				} catch (e) {
+					this.pollHandlers.onDebug?.(`GetSeqTransportMode(${seqId}) error: ${e instanceof Error ? e.message : e}`)
+					continue
+				}
+				this.updateSequenceState(seqId, state)
+				this.pollHandlers.onSequenceTransport?.(seqId, state)
+
+				try {
+					const opacity = await this.getSequenceTransparency(seqId)
+					this.pollHandlers.onSequenceOpacity?.(seqId, opacity)
+				} catch (e) {
+					this.pollHandlers.onDebug?.(`GetSequenceTransparency(${seqId}) error: ${e instanceof Error ? e.message : e}`)
+				}
+			}
+		} finally {
+			this.pollRoundRunning = false
+		}
 	}
 
 	// Called when sequence state changes to update polling speed in sequence connections
@@ -785,167 +816,61 @@ export class PBClient {
 				this.pollHandlers.onDebug?.(`RX ${commandName(rawCmdId)} ${data.toString('hex')}`)
 			}
 
+			const current = this.currentRequest
+			if (!current) return // Unsolicited, or a late reply to a request that already timed out.
 			if (rawCmdId === -1) {
-				// Error response from Pandoras Box. A poll turn fires both a transport-status and an
-				// opacity request for the same sequence, so an error here could belong to either one -
-				// there's no way to tell which for certain. statusRequestPending is always cleared below
-				// so the poll queue can never get stuck waiting for a response that will never arrive;
-				// the sequence is only dropped from active polling if there's no more likely culprit
-				// (a simultaneously pending transparency request) to blame instead.
-				const transparencyReject = this.pendingTransparencyReject
-				this.pendingTransparencyResolve = null
-				this.pendingTransparencyReject = null
-
-				if (this.currentStatusRequestId !== null) {
-					this.statusRequestPending = false
-					if (!transparencyReject) {
-						const invalidId = this.currentStatusRequestId
-						this.pollSequenceIds = this.pollSequenceIds.filter((id) => id !== invalidId)
-					}
-					void this.processStatusRequestQueue()
-				}
-
-				if (transparencyReject) {
-					transparencyReject(new Error('Sequence transparency query returned an error response'))
-				}
-				if (this.currentSequenceNameId !== null) {
-					// Remove from pending IDs and skip to next
-					const invalidId = this.currentSequenceNameId
-					this.pendingSequenceIds = this.pendingSequenceIds.filter((id) => id !== invalidId)
-					this.currentSequenceNameId = null
-					void this.processSequenceNameQueue()
-				}
+				const err = new DeviceErrorResponse(`${commandName(current.cmdId)} returned an error`)
+				this.finishRequest(current, undefined, err)
 				return
 			}
-
 			const cmdId: CommandId = rawCmdId
-
-			switch (cmdId) {
-				case CommandId.GetSeqTransportMode: {
-					// Response format: Only Int state (no seqId!)
-					// We track which seqId we're requesting via currentStatusRequestId
-					// State is at offset 19, right after the PBAU header
-
-					this.statusRequestPending = false
-
-					if (data.length >= 23) {
-						const stateInt = data.readInt32BE(19)
-						const state: TransportState =
-							stateInt === 1 ? 'Play' : stateInt === 2 ? 'Stop' : stateInt === 3 ? 'Pause' : 'Unknown'
-
-						// Check if this is for a specific sequence or main polling
-						if (this.currentStatusRequestId !== null) {
-							// Update internal state for polling speed adjustment
-							this.updateSequenceState(this.currentStatusRequestId, state)
-							this.pollHandlers.onSequenceTransport?.(this.currentStatusRequestId, state)
-							void this.processStatusRequestQueue()
-						} else {
-							this.pollHandlers.onTransport?.(state)
-						}
-					}
-					break
-				}
-				case CommandId.GetSequenceTransparency: {
-					if (data.length >= 23) {
-						// Native range is linear 0-65535 (65535/100 = 655.35 per percent) - no descaling needed.
-						const value = data.readInt32BE(19)
-						this.pendingTransparencyResolve?.(value)
-						this.pendingTransparencyResolve = null
-						this.pendingTransparencyReject = null
-					}
-					break
-				}
-				// GetSeqTime and GetRemainingTimeUntilNextCue are handled by per-sequence connections;
-				// the main connection never sends GetRemainingTimeUntilNextCue, so no case for it here.
-				case CommandId.GetSequenceIds: {
-					// Response format: Int count (BE), Int mystery (BE), then count * Int IDs (LE)!
-					const count = data.readInt32BE(19)
-
-					this.pendingSequenceIds = []
-					// Start reading IDs at offset 27, as Little-Endian
-					let offset = 27
-					for (let i = 0; i < count && offset + 4 <= data.length; i++) {
-						const seqId = data.readInt32LE(offset)
-						this.pendingSequenceIds.push(seqId)
-						offset += 4
-					}
-					// Queue up name requests
-					this.sequenceNameQueue = [...this.pendingSequenceIds]
-					this.pendingSequenceNames.clear()
-					// Start fetching names
-					void this.processSequenceNameQueue()
-					break
-				}
-				case CommandId.GetSequenceName: {
-					// Response format: Short strLen, then strLen bytes (UTF-8 string)
-					// No seqId in response! We track it from the request
-					if (this.currentSequenceNameId === null) {
-						break
-					}
-
-					const strLen = data.readInt16BE(19)
-					const nameEnd = Math.min(21 + strLen, data.length)
-					const name = data.toString('utf8', 21, nameEnd)
-
-					this.pendingSequenceNames.set(this.currentSequenceNameId, name)
-					this.currentSequenceNameId = null
-
-					// Check if we got all names
-					if (this.pendingSequenceNames.size === this.pendingSequenceIds.length) {
-						const sequences: SequenceInfo[] = this.pendingSequenceIds.map((id) => ({
-							id,
-							name: this.pendingSequenceNames.get(id) || `Sequence ${id}`,
-						}))
-						this.pollHandlers.onSequencesUpdated?.(sequences)
-					} else {
-						// Fetch next name
-						void this.processSequenceNameQueue()
-					}
-					break
-				}
-				default:
-					break
+			if (cmdId === current.cmdId) {
+				this.finishRequest(current, data)
 			}
 		} catch (err: any) {
 			this.pollHandlers.onError?.(err)
 		}
 	}
 
-	private async processSequenceNameQueue(): Promise<void> {
-		if (this.sequenceNameQueue.length === 0) return
-		const nextId = this.sequenceNameQueue.shift()
-		if (nextId !== undefined) {
-			await this.fetchSequenceName(nextId)
-		}
+	private async request(cmdId: CommandId, parts: Buffer[]): Promise<Buffer> {
+		if (!this.socket || this.connecting) throw new Error('Not connected')
+		return new Promise<Buffer>((resolve, reject) => {
+			this.requestQueue.push({ cmdId, parts, resolve, reject })
+			this.pumpRequests()
+		})
 	}
 
-	private async processStatusRequestQueue(): Promise<void> {
-		// Don't start a new request if one is pending
-		if (this.statusRequestPending) {
-			return
-		}
-		if (this.statusRequestQueue.length === 0) {
-			this.currentStatusRequestId = null
-			return
-		}
-		const nextId = this.statusRequestQueue.shift()
-		if (nextId !== undefined) {
-			this.currentStatusRequestId = nextId
-			this.statusRequestPending = true
-			await this.send(CommandId.GetSeqTransportMode, [this.writeInt(nextId)])
-
-			// Piggyback an opacity poll onto the same round-robin turn (independently serialized/tracked).
-			this.getSequenceTransparency(nextId)
-				.then((value) => {
-					this.pollHandlers.onSequenceOpacity?.(nextId, value)
-				})
-				.catch((e: unknown) => {
-					this.pollHandlers.onDebug?.(`GetSequenceTransparency(${nextId}) error: ${e instanceof Error ? e.message : e}`)
-				})
-		}
+	private pumpRequests(): void {
+		if (this.currentRequest) return
+		const next = this.requestQueue.shift()
+		if (!next) return
+		this.currentRequest = next
+		next.timer = setTimeout(() => {
+			this.finishRequest(next, undefined, new Error(`Timed out waiting for ${commandName(next.cmdId)}`))
+		}, PBClient.REQUEST_TIMEOUT_MS)
+		this.send(next.cmdId, next.parts).catch((e: unknown) => {
+			this.finishRequest(next, undefined, e instanceof Error ? e : new Error(String(e)))
+		})
 	}
 
-	// Time polling is now handled by per-sequence SequenceConnection instances
+	private finishRequest(req: PendingRequest, data?: Buffer, err?: Error): void {
+		if (this.currentRequest !== req) return
+		clearTimeout(req.timer)
+		this.currentRequest = null
+		if (err || !data) req.reject(err ?? new Error('No response data'))
+		else req.resolve(data)
+		this.pumpRequests()
+	}
+
+	private failAllRequests(err: Error): void {
+		const pending = this.currentRequest ? [this.currentRequest, ...this.requestQueue] : [...this.requestQueue]
+		this.currentRequest = null
+		this.requestQueue = []
+		for (const req of pending) {
+			clearTimeout(req.timer)
+			req.reject(err)
+		}
+	}
 
 	private buildHeader(bodyLen: number): Buffer {
 		const preHeader = Buffer.from([1])

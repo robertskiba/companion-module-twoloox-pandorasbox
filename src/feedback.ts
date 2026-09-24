@@ -1,14 +1,11 @@
 import type { CompanionFeedbackDefinitions, CompanionFeedbackBooleanEvent } from '@companion-module/base'
 import type { TransportState } from './client.js'
 
+// The former global 'transport_state' feedback was removed in 3.1.2 (the device only reports
+// transport state per sequence) - see upgrades.ts, which converts existing uses.
 export enum FeedbackId {
-	TransportState = 'transport_state',
 	RemainingCueThreshold = 'remaining_threshold',
 	SequenceTransportState = 'sequence_transport_state',
-}
-
-export interface ModuleState {
-	transport: TransportState
 }
 
 export interface SequenceCountdown {
@@ -19,35 +16,11 @@ export interface SequenceCountdown {
 }
 
 export function GetFeedbacksList(
-	getState: () => ModuleState,
 	getSequenceChoices: () => { id: number; label: string }[],
 	getSequenceState: (seqId: number) => TransportState,
 	getSequenceCountdown: (seqId: number) => SequenceCountdown | undefined,
 ): CompanionFeedbackDefinitions {
 	return {
-		[FeedbackId.TransportState]: {
-			type: 'boolean',
-			name: 'Transport state matches',
-			description: 'True when transport matches selected state',
-			options: [
-				{
-					type: 'dropdown',
-					id: 'state',
-					label: 'State',
-					default: 'Play',
-					choices: [
-						{ id: 'Play', label: 'Play' },
-						{ id: 'Pause', label: 'Pause' },
-						{ id: 'Stop', label: 'Stop' },
-					],
-				},
-			],
-			defaultStyle: {},
-			callback: (fb: CompanionFeedbackBooleanEvent) => {
-				const state = getState().transport
-				return state === fb.options.state
-			},
-		},
 		[FeedbackId.RemainingCueThreshold]: {
 			type: 'boolean',
 			name: 'Remaining cue under threshold',

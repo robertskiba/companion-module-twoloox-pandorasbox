@@ -11,7 +11,7 @@ import {
 } from '@companion-module/base'
 import { GetActionsList } from './actions.js'
 import { GetConfigFields, type DeviceConfig } from './config.js'
-import { GetFeedbacksList, type ModuleState } from './feedback.js'
+import { FeedbackId, GetFeedbacksList } from './feedback.js'
 import { GetPresetsList } from './presets.js'
 import { PBClient, type TransportState, type SequenceInfo, type CueInfo } from './client.js'
 import {
@@ -50,11 +50,12 @@ export type ModuleSchema = {
 
 export { UpgradeScripts }
 
+function totalSeconds(t: SequenceTime): number {
+	return t.h * 3600 + t.m * 60 + t.s
+}
+
 export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> {
 	private client: PBClient | undefined
-	private state: ModuleState = {
-		transport: 'Unknown',
-	}
 	private sequences: SequenceInfo[] = []
 	private sequenceRefreshTimer: NodeJS.Timeout | undefined
 	private sequenceStates: Map<number, TransportState> = new Map()
@@ -89,7 +90,6 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 	private updateFeedbackDefinitions(): void {
 		this.setFeedbackDefinitions(
 			GetFeedbacksList(
-				() => this.state,
 				() => this.getSequenceChoices(),
 				(seqId) => this.sequenceStates.get(seqId) || 'Unknown',
 				(seqId) => this.sequenceCountdowns.get(seqId),
@@ -149,6 +149,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 		}
 		this.client?.disconnect()
 		this.client = undefined
+		this.resetSequenceState()
 		this.sequences = []
 
 		const host = config.host?.trim()
@@ -178,48 +179,60 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 					// Only report disconnect if this is the active client
 					if (this.client === client) {
 						this.updateStatus(InstanceStatus.Disconnected, 'Disconnected from Pandoras Box')
+						this.resetSequenceState()
 						this.scheduleReconnect(config)
 					}
 				},
-				onTransport: (state) => {
-					this.state.transport = state
-				},
 				onSequenceTransport: (seqId, state) => {
+					if (this.sequenceStates.get(seqId) === state) return
 					this.sequenceStates.set(seqId, state)
-					this.updateSequenceStatusVariables()
-					this.checkAllFeedbacks()
+					this.setSequenceValues(seqId, (seqs) => GetSequenceStatusVariableValues(seqs, this.sequenceStates))
+					this.checkFeedbacks(FeedbackId.SequenceTransportState)
 				},
 				onSequenceTime: (seqId, h, m, s, f) => {
 					this.sequenceTimes.set(seqId, { h, m, s, f })
-					this.updateSequenceTimeVariables()
+					this.setSequenceValues(seqId, (seqs) => ({
+						...GetSequenceTimeVariableValues(seqs, this.sequenceTimes),
+						...GetSequenceCountupVariableValues(seqs, this.sequenceTimes, this.sequenceCueInfos),
+					}))
 				},
 				onSequenceCountdown: (seqId, h, m, s, f) => {
-					this.sequenceCountdowns.set(seqId, { h, m, s, f })
-					this.updateSequenceCountdownVariables()
+					const previous = this.sequenceCountdowns.get(seqId)
+					const countdown = { h, m, s, f }
+					this.sequenceCountdowns.set(seqId, countdown)
+					this.setSequenceValues(seqId, (seqs) => GetSequenceCountdownVariableValues(seqs, this.sequenceCountdowns))
+					// The threshold feedback compares whole seconds, so it only needs re-checking when those change.
+					if (!previous || totalSeconds(previous) !== totalSeconds(countdown)) {
+						this.checkFeedbacks(FeedbackId.RemainingCueThreshold)
+					}
 				},
 				onSequenceCueInfo: (seqId, cueInfo) => {
+					if (JSON.stringify(this.sequenceCueInfos.get(seqId)) === JSON.stringify(cueInfo)) return
 					this.sequenceCueInfos.set(seqId, cueInfo)
-					this.updateSequenceCueVariables()
+					this.setSequenceValues(seqId, (seqs) => ({
+						...GetSequenceNextCueVariableValues(seqs, this.sequenceCueInfos),
+						...GetSequencePrevCueVariableValues(seqs, this.sequenceCueInfos),
+						...GetSequenceCountupVariableValues(seqs, this.sequenceTimes, this.sequenceCueInfos),
+					}))
 				},
 				onSequenceOpacity: (seqId, value) => {
+					if (this.sequenceOpacities.get(seqId) === value) return
 					this.sequenceOpacities.set(seqId, value)
-					this.updateSequenceOpacityVariables()
+					this.setSequenceValues(seqId, (seqs) => GetSequenceOpacityVariableValues(seqs, this.sequenceOpacities))
 				},
 				onSequencesUpdated: (sequences) => {
 					// Ignore late responses from a client that's no longer the active one (e.g. config
 					// was changed again while this request was still in flight).
 					if (this.client !== client) return
+					// Runs on every refresh, not just on changes: it also replaces dead timecode connections.
+					client.setPollSequences(sequences.map((s) => s.id))
+					// The list is re-fetched every 10s - only push new definitions when something changed.
+					if (JSON.stringify(sequences) === JSON.stringify(this.sequences)) return
 					this.log('info', `Received ${sequences.length} sequences from Pandoras Box`)
 					this.sequences = sequences
-					// Update actions with new sequence choices
 					this.updateActionDefinitions()
-					// Update feedbacks with new sequence choices
 					this.updateFeedbackDefinitions()
-					// Update variable definitions and values for sequences
 					this.updateSequenceVariables()
-					// Start polling sequence statuses
-					client.setPollSequences(sequences.map((s) => s.id))
-					// Update presets with new sequences
 					this.updatePresetDefinitions()
 				},
 				onDebug: (message) => {
@@ -240,7 +253,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 
 			// TCP is connected at this point; now verify we also get a PBAU response for the configured domain.
 			this.log('info', 'TCP connected, verifying Pandoras Box protocol response...')
-			await client.refreshSequences()
+			void client.refreshSequences()
 
 			const timeoutMs = 3000
 			await Promise.race([
@@ -251,16 +264,12 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			])
 
 			this.updateStatus(InstanceStatus.Ok)
-			this.log('info', 'Connected to Pandoras Box, requesting sequences...')
-			// Fetch sequences immediately and then every 10 seconds
-			const refreshSequences = () => {
+			this.log('info', 'Connected to Pandoras Box')
+			// Re-fetch the sequence list every 10 seconds to pick up added/removed/renamed sequences
+			this.sequenceRefreshTimer = setInterval(() => {
 				this.log('debug', 'Refreshing sequences...')
 				void client.refreshSequences()
-			}
-			// Initial refresh after 500ms
-			setTimeout(refreshSequences, 500)
-			// Then refresh every 10 seconds
-			this.sequenceRefreshTimer = setInterval(refreshSequences, 10000)
+			}, 10000)
 		} catch (e: any) {
 			const msg = e?.message ?? 'Connect failed'
 			this.log('error', msg)
@@ -275,6 +284,35 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			client.disconnect()
 			this.scheduleReconnect(config)
 		}
+	}
+
+	// Pushes variable values for a single sequence only: time/countdown/cue updates arrive up to 30x/sec
+	// per sequence, so rebuilding every sequence's values on each of them scales badly with many sequences.
+	private setSequenceValues(seqId: number, build: (seqs: SequenceInfo[]) => CompanionVariableValues): void {
+		const seq = this.sequences.find((s) => s.id === seqId)
+		if (!seq) return
+		this.setVariableValues(build([seq]))
+	}
+
+	// Once the device is gone, buttons must not keep showing its last known state (e.g. "Play" or a
+	// frozen timecode) - reset every per-sequence value to its "no data" placeholder.
+	private resetSequenceState(): void {
+		this.sequenceStates.clear()
+		this.sequenceTimes.clear()
+		this.sequenceCountdowns.clear()
+		this.sequenceCueInfos.clear()
+		this.sequenceOpacities.clear()
+		const seqs = this.sequences
+		this.setVariableValues({
+			...GetSequenceStatusVariableValues(seqs, this.sequenceStates),
+			...GetSequenceTimeVariableValues(seqs, this.sequenceTimes),
+			...GetSequenceCountdownVariableValues(seqs, this.sequenceCountdowns),
+			...GetSequenceCountupVariableValues(seqs, this.sequenceTimes, this.sequenceCueInfos),
+			...GetSequenceNextCueVariableValues(seqs, this.sequenceCueInfos),
+			...GetSequencePrevCueVariableValues(seqs, this.sequenceCueInfos),
+			...GetSequenceOpacityVariableValues(seqs, this.sequenceOpacities),
+		})
+		this.checkAllFeedbacks()
 	}
 
 	private updateSequenceVariables(): void {
@@ -305,42 +343,8 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 		this.setVariableValues(seqValues)
 		this.log(
 			'debug',
-			`Created ${this.sequences.length} sequence variables (name, status, time, countdown, nextcue, opacity)`,
+			`Created variables for ${this.sequences.length} sequences (name, status, time, countdown, countup, next/prev cue, opacity)`,
 		)
-	}
-
-	private updateSequenceStatusVariables(): void {
-		const statusValues = GetSequenceStatusVariableValues(this.sequences, this.sequenceStates)
-		this.setVariableValues(statusValues)
-	}
-
-	private updateSequenceTimeVariables(): void {
-		const timeValues = GetSequenceTimeVariableValues(this.sequences, this.sequenceTimes)
-		this.setVariableValues(timeValues)
-		this.updateSequenceCountupVariables()
-	}
-
-	private updateSequenceCountupVariables(): void {
-		const countupValues = GetSequenceCountupVariableValues(this.sequences, this.sequenceTimes, this.sequenceCueInfos)
-		this.setVariableValues(countupValues)
-	}
-
-	private updateSequenceCountdownVariables(): void {
-		const countdownValues = GetSequenceCountdownVariableValues(this.sequences, this.sequenceCountdowns)
-		this.setVariableValues(countdownValues)
-	}
-
-	private updateSequenceCueVariables(): void {
-		const nextCueValues = GetSequenceNextCueVariableValues(this.sequences, this.sequenceCueInfos)
-		this.setVariableValues(nextCueValues)
-		const prevCueValues = GetSequencePrevCueVariableValues(this.sequences, this.sequenceCueInfos)
-		this.setVariableValues(prevCueValues)
-		this.updateSequenceCountupVariables()
-	}
-
-	private updateSequenceOpacityVariables(): void {
-		const opacityValues = GetSequenceOpacityVariableValues(this.sequences, this.sequenceOpacities)
-		this.setVariableValues(opacityValues)
 	}
 
 	private updatePresetDefinitions(): void {

@@ -2,6 +2,20 @@
 
 All notable changes to this module are documented in this file.
 
+## [3.1.2] - 2026-09-24
+
+### Fixed
+
+- The "Transport state matches" feedback never became active: it read a global transport state that was never actually filled in, because the device only reports transport state per sequence. It has been removed; existing uses are automatically converted to "Sequence transport state matches" for sequence 1, keeping the selected state (adjust the sequence if needed).
+- After the connection to Pandoras Box is lost, variables and feedbacks no longer keep showing the last known values (e.g. a sequence still showing "Play" or a frozen timecode). They now reset to their "no data" placeholders until the connection is back.
+- An error response from the device for one sequence (e.g. one that was just deleted) could stop status and opacity updates for a *different* sequence for up to 10 seconds. Status, opacity and sequence-list queries now run strictly one at a time with a timeout, so every response is matched to the right sequence.
+- The timecode connection of a single sequence was never re-established if it failed or dropped on its own, freezing that sequence's time, countdown, countup and next/previous cue variables until the whole module reconnected. Dead connections are now replaced on the next sequence refresh (within 10 seconds).
+
+### Changed
+
+- Time, countdown, countup, cue and opacity updates now only refresh the variables of the sequence they belong to, instead of every sequence's variables on each update. Feedbacks are only re-checked when their underlying value actually changes.
+- Action, feedback, preset and variable definitions are only sent to Companion again when the sequence list actually changed, instead of every 10 seconds.
+
 ## [3.1.1] - 2026-09-16
 
 ### Fixed
