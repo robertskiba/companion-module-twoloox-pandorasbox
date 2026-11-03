@@ -28,26 +28,6 @@ User documentation (configuration, actions, feedbacks, variables) is in [compani
 - **One TCP connection per sequence:** timecode, countdown and cue info, polled 30x per second while playing and 5x per second otherwise.
 - **Protocol notes:** mixed endianness (big-endian headers, little-endian sequence ID lists), opacity is read in 0-65535 but written in 0-255, error answers don't say which request failed.
 
-## Development
-
-Requires Node.js 26 and Yarn 4 via Corepack (`corepack enable`). `yarn install` also sets up a pre-commit hook that runs `lint-staged`.
-
-```bash
-yarn install
-yarn build        # compile TypeScript to dist/
-yarn lint         # ESLint + Prettier
-yarn format       # apply Prettier to the whole repository
-yarn package      # build, then create the installable package (.tgz)
-```
-
-For a prerelease package, use `yarn package --prerelease`. Without the flag, the package is always marked as a stable release.
-
-### Releasing
-
-1. Set the version in `package.json` and `companion/manifest.json` (e.g. `3.1.6` or `3.1.6-beta.1`, with `isPrerelease` accordingly) and add the version to `CHANGELOG.md`.
-2. Commit, then tag exactly that commit with exactly that version, with or without a leading `v` (e.g. `v3.1.6`). The Bitfocus checks fail if the tag and `package.json` don't match.
-3. Publishing a GitHub release for the tag attaches the package automatically (`release.yaml`).
-4. Publish the version in the [Bitfocus developer portal](https://developer.bitfocus.io). Only versions published there, and approved in the module review, appear in Companion's module library; a GitHub tag or release alone is not enough.
 
 ## Tested versions
 
