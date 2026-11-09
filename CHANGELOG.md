@@ -6,12 +6,17 @@ All notable changes to this module are documented in this file.
 
 Addresses the module review of 3.1.6.
 
+### Added
+
+- Set Playhead accepts times with the units `h`, `m`, `s` and `f` (frames), e.g. `2h3m5s`, `3m5s` or `5s10f`. Larger values are converted: `120m90s` = 2 hours 1 minute 30 seconds. Other units such as `ms` are ignored.
+- Set Playhead explains its input formats in a tooltip and a short description below the Time field.
+
 ### Fixed
 
 - Saving corrected connection settings (e.g. the right Domain) while the module was retrying could switch the connection back to the old settings a few seconds later. The connection then failed again until the settings were saved once more or the connection was disabled and enabled.
 - After disabling the connection while it was retrying, the module could still try to connect once more.
 - A connection that stops answering without being closed (e.g. network cable pulled, switch down, Pandoras Box not responding) is now detected after about 5 seconds and re-established automatically. Before, the status stayed OK with frozen values until the operating system gave up on the connection, which can take many minutes.
-- Set Playhead: input without colons that contains anything other than digits, such as `10.5` or `1m30s`, is now ignored. Before, the other characters were dropped and the sequence jumped to an unexpected position (`10.5` went to 1 second 5 frames).
+- Set Playhead: decimals such as `10.5`, input with spaces and other text are now ignored. Before, the other characters were dropped and the sequence jumped to an unexpected position (`10.5` went to 1 second 5 frames).
 
 ### Changed
 

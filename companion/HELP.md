@@ -44,9 +44,27 @@ After connecting, the module finds all sequences by itself and keeps the list up
 ### Set Playhead
 
 - **Absolute** moves the sequence to the given time, **Relative** moves it forward (`+`) or back (`-`) from its current position.
-- Time formats: `hh:mm:ss:ff` (e.g. `00:01:30:15`), shorter forms read from the right (`1:00` = 1 second, `1:10:00` = 1 minute 10 seconds) or digits without colons, read in pairs from the right (`10` = 10 frames, `100` = 1 second, `1000` = 10 seconds).
-- The field accepts variables and expressions. Invalid input, including decimals such as `10.5` or units such as `1m30s`, is ignored and nothing is sent.
+- Timecode is read from the right like SMPTE timecode: the last group is always frames, then seconds, minutes and hours. Missing groups count as 0.
+
+| Input           | Means                                                              |
+| --------------- | ------------------------------------------------------------------ |
+| `01:01:01:01`   | 1 hour 1 minute 1 second 1 frame                                   |
+| `01:00:10`      | 1 minute 0 seconds 10 frames                                       |
+| `01:00`         | 1 second 0 frames                                                  |
+| `10`            | 10 frames (digits without colons are read in pairs from the right) |
+| `100`           | 1 second                                                           |
+| `1000`          | 10 seconds                                                         |
+| `13000`         | 1 minute 30 seconds                                                |
+| `2h3m5s`        | 2 hours 3 minutes 5 seconds (units in the order h, m, s, f)        |
+| `90s`           | 1 minute 30 seconds                                                |
+| `120m90s`       | 2 hours 1 minute 30 seconds                                        |
+| `5s10f`         | 5 seconds 10 frames                                                |
+| `-500` or `-5s` | 5 seconds back (Relative mode)                                     |
+
+- Units: only `h`, `m`, `s` and `f` (frames), in this order and each at most once. Larger values are converted, as in `90s` or `120m90s`. Frames are sent as entered, because the module doesn't know the sequence's frame rate.
+- The field accepts variables and expressions. Input with spaces (also at the start or end), other units such as `ms`, decimals such as `10.5` or `1.5m` and any other text are ignored, nothing is sent.
 - **Learn** fills in the sequence's current time and sets the mode to Absolute.
+- In Companion, hover over the field for these rules and examples.
 
 ## Feedbacks
 
