@@ -75,7 +75,8 @@ function isValidTimeComponent(n: number): boolean {
 // "13000" -> 1m 30s 00f, with any further leading digits rolling up into hours. An optional
 // leading +/- sign carries through to every field (used for relative offsets). Returns undefined
 // for anything that doesn't cleanly parse - empty/blank groups, non-digit or negative colon
-// groups, more than 4 colon groups, or a value too large to send to the device.
+// groups, more than 4 colon groups, non-digits without colons (e.g. "10.5" or "1m30s"), or a
+// value too large to send to the device.
 function parsePlayheadInput(raw: string): ParsedPlayheadTime | undefined {
 	const trimmed = raw.trim()
 	if (trimmed === '') return undefined
@@ -106,8 +107,10 @@ function parsePlayheadInput(raw: string): ParsedPlayheadTime | undefined {
 		}
 		;[h, m, s, f] = padded
 	} else {
-		const digits = body.replace(/\D/g, '')
-		if (digits === '') return undefined
+		// Reject rather than strip stray characters: "10.5" would otherwise become "105" (1s 5f) and
+		// make the sequence jump somewhere unexpected instead of doing nothing.
+		if (!/^\d+$/.test(body)) return undefined
+		const digits = body
 		f = Number(digits.slice(-2))
 		const afterFrames = digits.slice(0, -2)
 		s = afterFrames === '' ? 0 : Number(afterFrames.slice(-2))

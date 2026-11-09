@@ -179,7 +179,7 @@ export function GetSequenceCountupVariableDefinitions(sequences: SequenceInfo[])
 // rate needed). The frames digit intentionally isn't computed the same way (time.f minus the
 // cue's own frame offset): without knowing the sequence's frame rate, that difference can't be
 // borrowed/carried, so whenever time.f dips below the cue's frame offset it clamps to 0 for a
-// stretch of every second - looking like the display "hakt" (stutters) once a second instead of
+// stretch of every second - making the display stutter once a second instead of
 // updating frame-by-frame like the countdown does. Mirroring time.f directly keeps this ticking
 // smoothly every poll, at the cost of it being "current frame" rather than "frames elapsed".
 export function GetSequenceCountupVariableValues(

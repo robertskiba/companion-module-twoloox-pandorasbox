@@ -191,7 +191,9 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 					}))
 				},
 				onSequenceCountdown: (seqId, h, m, s, f) => {
+					// Same as the time: a stopped or paused sequence keeps answering with the same countdown.
 					const previous = this.sequenceCountdowns.get(seqId)
+					if (previous && previous.h === h && previous.m === m && previous.s === s && previous.f === f) return
 					const countdown = { h, m, s, f }
 					this.sequenceCountdowns.set(seqId, countdown)
 					this.setSequenceValues(seqId, (seqs) => GetSequenceCountdownVariableValues(seqs, this.sequenceCountdowns))
@@ -233,6 +235,7 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 					this.log('debug', `[PBClient] ${message}`)
 				},
 				onError: (err) => {
+					if (this.client !== client) return
 					this.log('error', err.message)
 					this.updateStatus(InstanceStatus.UnknownError, err.message)
 				},
@@ -242,8 +245,13 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 
 		this.client = client
 
+		// Saving the settings or disabling the connection replaces this.client while this attempt may still be
+		// waiting below. A superseded attempt must then stop quietly: otherwise its late failure would set an
+		// error status and schedule a reconnect with the old settings, dropping the newer, working connection.
+		let protocolTimeout: NodeJS.Timeout | undefined
 		try {
 			await client.connect()
+			if (this.client !== client) return
 
 			// TCP is connected at this point; now verify we also get a PBAU response for the configured domain.
 			this.log('info', 'TCP connected, verifying Pandoras Box protocol response...')
@@ -252,10 +260,14 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			const timeoutMs = 3000
 			await Promise.race([
 				protocolAlive,
-				new Promise<void>((_, reject) =>
-					setTimeout(() => reject(new Error('No response from Pandoras Box (check Domain)')), timeoutMs),
-				),
+				new Promise<void>((_, reject) => {
+					protocolTimeout = setTimeout(
+						() => reject(new Error('No response from Pandoras Box (check Domain)')),
+						timeoutMs,
+					)
+				}),
 			])
+			if (this.client !== client) return
 
 			this.updateStatus(InstanceStatus.Ok)
 			this.log('info', 'Connected to Pandoras Box')
@@ -265,6 +277,10 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 				void client.refreshSequences()
 			}, 10000)
 		} catch (e: any) {
+			if (this.client !== client) {
+				client.disconnect()
+				return
+			}
 			const msg = e?.message ?? 'Connect failed'
 			this.log('error', msg)
 			// If we connected TCP but never got a protocol response, this often indicates a wrong domain.
@@ -272,11 +288,11 @@ export default class TwolooxPandorasInstance extends InstanceBase<ModuleSchema> 
 			this.updateStatus(InstanceStatus.ConnectionFailure, msg)
 			// Clear this.client first so the async 'close' event triggered by disconnect() below doesn't
 			// also run onDisconnected's status update/reconnect scheduling for the same failure.
-			if (this.client === client) {
-				this.client = undefined
-			}
+			this.client = undefined
 			client.disconnect()
 			this.scheduleReconnect(config)
+		} finally {
+			clearTimeout(protocolTimeout)
 		}
 	}
 

@@ -10,7 +10,7 @@ Requires **Companion 5.0 or later**. For older Companion versions, use module ve
 - **Domain:** Pandoras Box domain, default `0`. If the connection stays in an error state, check that the domain matches.
 - **Log protocol traffic (debug):** Off by default. For troubleshooting, enable it and set the connection's log level in Companion to Debug to log every message sent and received.
 
-After connecting, the module finds all sequences by itself and keeps the list up to date every 10 seconds. If the connection drops, it reconnects automatically every 10 seconds.
+After connecting, the module finds all sequences by itself and keeps the list up to date every 10 seconds. If the connection drops, or Pandoras Box stops answering for about 5 seconds (e.g. a network cable was pulled), it reconnects automatically every 10 seconds.
 
 ## Actions
 
@@ -45,7 +45,7 @@ After connecting, the module finds all sequences by itself and keeps the list up
 
 - **Absolute** moves the sequence to the given time, **Relative** moves it forward (`+`) or back (`-`) from its current position.
 - Time formats: `hh:mm:ss:ff` (e.g. `00:01:30:15`), shorter forms read from the right (`1:00` = 1 second, `1:10:00` = 1 minute 10 seconds) or digits without colons, read in pairs from the right (`10` = 10 frames, `100` = 1 second, `1000` = 10 seconds).
-- The field accepts variables and expressions. Invalid input is ignored, nothing is sent.
+- The field accepts variables and expressions. Invalid input, including decimals such as `10.5` or units such as `1m30s`, is ignored and nothing is sent.
 - **Learn** fills in the sequence's current time and sets the mode to Absolute.
 
 ## Feedbacks

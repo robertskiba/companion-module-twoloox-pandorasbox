@@ -2,6 +2,21 @@
 
 All notable changes to this module are documented in this file.
 
+## [3.1.7-beta.1] - 2026-11-09
+
+Addresses the module review of 3.1.6.
+
+### Fixed
+
+- Saving corrected connection settings (e.g. the right Domain) while the module was retrying could switch the connection back to the old settings a few seconds later. The connection then failed again until the settings were saved once more or the connection was disabled and enabled.
+- After disabling the connection while it was retrying, the module could still try to connect once more.
+- A connection that stops answering without being closed (e.g. network cable pulled, switch down, Pandoras Box not responding) is now detected after about 5 seconds and re-established automatically. Before, the status stayed OK with frozen values until the operating system gave up on the connection, which can take many minutes.
+- Set Playhead: input without colons that contains anything other than digits, such as `10.5` or `1m30s`, is now ignored. Before, the other characters were dropped and the sequence jumped to an unexpected position (`10.5` went to 1 second 5 frames).
+
+### Changed
+
+- Unchanged countdown values are no longer sent to Companion again.
+
 ## [3.1.6] - 2026-11-03
 
 First release in the Companion module library since 3.0.1, so it also includes all changes listed under 3.1.0 to 3.1.5 below. Requires Companion 5.0 or later. This version addresses the module review of 3.1.4.

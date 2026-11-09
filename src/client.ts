@@ -109,9 +109,12 @@ class SequenceConnection {
 	private onCueInfo: (cueInfo: CueInfo) => void
 	private onDebug?: (message: string) => void
 	private currentState: TransportState = 'Unknown'
+	private lastRxAt = 0
 
 	private static readonly POLL_FAST = 33 // 30x/sec when playing
 	private static readonly POLL_SLOW = 200 // 5x/sec when stopped/paused
+	// No answer for this long: the connection is treated as dead and closed, so the next sequence refresh replaces it.
+	private static readonly STALE_AFTER_MS = 5000
 
 	constructor(
 		host: string,
@@ -155,6 +158,7 @@ class SequenceConnection {
 
 			sock.connect({ host: this.host, port: PR_PORT }, () => {
 				this.connected = true
+				this.lastRxAt = Date.now()
 				resolve()
 				this.startPolling()
 			})
@@ -172,6 +176,7 @@ class SequenceConnection {
 	}
 
 	private onSocketData(chunk: Buffer): void {
+		this.lastRxAt = Date.now()
 		this.rxBuffer = this.rxBuffer.length === 0 ? chunk : Buffer.concat([this.rxBuffer, chunk])
 		const { messages, remainder } = extractPbauMessages(this.rxBuffer)
 		this.rxBuffer = remainder
@@ -207,6 +212,11 @@ class SequenceConnection {
 		this.pollTimer = setTimeout(() => {
 			void (async () => {
 				if (!this.connected || !this.socket) return
+				if (Date.now() - this.lastRxAt > SequenceConnection.STALE_AFTER_MS) {
+					this.onDebug?.(`SeqConn[${this.seqId}] no response, closing`)
+					this.socket.destroy()
+					return
+				}
 
 				try {
 					await this.sendGetTime()
@@ -399,6 +409,11 @@ export class PBClient {
 	private requestQueue: PendingRequest[] = []
 	private currentRequest: PendingRequest | null = null
 	private static readonly REQUEST_TIMEOUT_MS = 1000
+	// After this many unanswered requests in a row (about 5 seconds without any answer), the connection is treated
+	// as lost and closed, which triggers the automatic reconnect. Without this, a half-open connection (cable
+	// pulled, switch down) keeps looking healthy until the OS gives up on it, which can take many minutes.
+	private static readonly MAX_CONSECUTIVE_TIMEOUTS = 5
+	private consecutiveTimeouts = 0
 
 	// Active fade timers per sequence, so re-triggering a fade cancels the previous one for that sequence.
 	// The token map guards against a rare race: if a new fade for the same sequence starts while an
@@ -778,7 +793,7 @@ export class PBClient {
 	}
 
 	private async send(commandId: CommandId, parts: Buffer[]): Promise<void> {
-		if (!this.socket || this.connecting) {
+		if (!this.socket || this.socket.destroyed || this.connecting) {
 			return
 		}
 		const body = Buffer.concat([this.writeShort(commandId), ...parts])
@@ -807,6 +822,7 @@ export class PBClient {
 			const domain = data.readInt32BE(5)
 			if (domain !== this.domain) return
 
+			this.consecutiveTimeouts = 0
 			if (!this.gotAnyResponse) {
 				this.gotAnyResponse = true
 				this.pollHandlers.onProtocolAlive?.()
@@ -846,6 +862,11 @@ export class PBClient {
 		if (!next) return
 		this.currentRequest = next
 		next.timer = setTimeout(() => {
+			this.consecutiveTimeouts++
+			if (this.consecutiveTimeouts >= PBClient.MAX_CONSECUTIVE_TIMEOUTS) {
+				this.pollHandlers.onDebug?.('No response from Pandoras Box, closing the connection')
+				this.socket?.destroy()
+			}
 			this.finishRequest(next, undefined, new Error(`Timed out waiting for ${commandName(next.cmdId)}`))
 		}, PBClient.REQUEST_TIMEOUT_MS)
 		this.send(next.cmdId, next.parts).catch((e: unknown) => {
